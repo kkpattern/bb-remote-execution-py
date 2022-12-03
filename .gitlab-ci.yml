@@ -1,0 +1,11 @@
+test:
+  tags:
+    - python3-cicd
+  before_script:
+    - python3 -m venv .bbtest
+    - . ./.bbtest/bin/activate
+    - pip install ".[test]"
+  script:
+    - python -m pytest tests
+  only:
+    - merge_requests
