@@ -21,7 +21,7 @@ from build.bazel.remote.execution.v2.remote_execution_pb2_grpc import (
 
 
 class FetchBatch(object):
-    def __init__(self):
+    def __init__(self) -> None:
         self._digests: typing.List[Digest] = []
         self._total_size_bytes = 0
 
@@ -129,9 +129,7 @@ class CASHelper(object):
                 batch_list.append(batch)
         for i, batch in enumerate(batch_list):
             if batch.digests:
-                request = BatchReadBlobsRequest(
-                    digests=batch.digests, acceptable_compressors=[0]
-                )
+                request = BatchReadBlobsRequest(digests=batch.digests)
                 response = self._cas_stub.BatchReadBlobs(request)
                 received_blob_count = 0
                 for each in response.responses:
@@ -174,7 +172,7 @@ class CASHelper(object):
         if sha256.hexdigest() != digest.hash:
             raise ValueError("Hash not match")
 
-    def update_all(self, provider_list: typing.Iterable[bytes]):
+    def update_all(self, provider_list: typing.Iterable[FileProvider]):
         batch = UpdateBatch()
         batch_list = [batch]
         bytes_limit = self._msg_size_bytes_limit

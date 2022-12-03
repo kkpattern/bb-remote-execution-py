@@ -1,4 +1,5 @@
 import collections
+import io
 import os
 import os.path
 import typing
@@ -73,11 +74,11 @@ class LocalHardlinkFilesystem(object):
         # NOTE: 注意一个相同的digest可能对应多个文件. 需要去重.
         digest_to_fetch = {}
         cache_name_to_files = collections.defaultdict(list)
-        for f in files_to_download:
-            name_in_cache = digest_to_cache_name(f.digest)
-            cache_name_to_files[name_in_cache].append(f)
-            digest_to_fetch[name_in_cache] = f.digest
-        file_opened = {}
+        for fn in files_to_download:
+            name_in_cache = digest_to_cache_name(fn.digest)
+            cache_name_to_files[name_in_cache].append(fn)
+            digest_to_fetch[name_in_cache] = fn.digest
+        file_opened: typing.Dict[str, io.BufferedWriter] = {}
         try:
             for digest, offset, data in backend.fetch_all(
                 digest_to_fetch.values()
