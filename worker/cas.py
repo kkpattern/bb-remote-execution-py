@@ -1,3 +1,4 @@
+import collections
 import hashlib
 import os.path
 import typing
@@ -230,3 +231,48 @@ class CASHelper(object):
                 data=data,
             )
             offset += data_size
+
+
+DigestKey = typing.Tuple[str, int]
+CacheInternalResult = typing.Tuple[Digest, bytes]
+CacheResult = typing.Tuple[Digest, int, bytes]
+
+
+class CASCache(object):
+    """A CAS cache. If a blob is larger than message size it won't be
+    cached.
+    """
+
+    def __init__(self, backend: CASHelper):
+        self._backend = backend
+        self._cache: typing.Dict[
+            typing.Tuple[str, int], bytes
+        ] = collections.OrderedDict()
+
+    def _fetch_all_in_cache(
+        self, digests: typing.Iterable[Digest]
+    ) -> typing.Tuple[typing.List[CacheInternalResult], typing.List[Digest]]:
+        """Fetch a blob in cache. If missing returns None."""
+        result_list = []
+        missing_list = []
+        for each in digests:
+            key = (each.hash, each.size_bytes)
+            if key in self._cache:
+                # use OrderedDict as a LRU cache dict.
+                r = self._cache.pop(key)
+                self._cache[key] = r
+                result_list.append((each, r))
+            else:
+                missing_list.append(each)
+        return (result_list, missing_list)
+
+    def fetch_all(self, digests: typing.Iterable[Digest]):
+        result_list, missing_list = self._fetch_all_in_cache(digests)
+        if missing_list:
+            for d, offset, data in self._backend.fetch_all(missing_list):
+                # Small enough to cache.
+                if d.size_bytes == len(data):
+                    self._cache[(d.hash, d.size_bytes)] = data
+                yield d, offset, data
+        for d, data in result_list:
+            yield d, 0, data
