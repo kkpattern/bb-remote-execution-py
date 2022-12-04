@@ -239,12 +239,15 @@ CacheResult = typing.Tuple[Digest, int, bytes]
 
 
 class CASCache(object):
-    """A CAS cache. If a blob is larger than message size it won't be
-    cached.
+    """A CAS cache.
+
+    NOTE: If a blob is larger than message size it won't be cached.
     """
 
-    def __init__(self, backend: CASHelper):
+    def __init__(self, backend: CASHelper, max_size_bytes: int = 0):
         self._backend = backend
+        self._max_size_bytes = max_size_bytes
+        self._total_size_bytes = 0
         self._cache: typing.Dict[
             typing.Tuple[str, int], bytes
         ] = collections.OrderedDict()
@@ -273,6 +276,12 @@ class CASCache(object):
                 # Small enough to cache.
                 if d.size_bytes == len(data):
                     self._cache[(d.hash, d.size_bytes)] = data
+                    self._total_size_bytes += d.size_bytes
+                    while self._total_size_bytes > self._max_size_bytes > 0:
+                        for key in self._cache:
+                            self._cache.pop(key)
+                            self._total_size_bytes -= key[1]
+                            break
                 yield d, offset, data
         for d, data in result_list:
             yield d, 0, data
