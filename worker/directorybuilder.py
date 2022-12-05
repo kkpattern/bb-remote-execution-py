@@ -2,6 +2,7 @@ import collections
 import os
 import os.path
 import shutil
+import sys
 import typing
 
 from build.bazel.remote.execution.v2.remote_execution_pb2 import Directory
@@ -14,6 +15,28 @@ from .filesystem import LocalHardlinkFilesystem
 
 
 DIGEST_KEY = typing.Optional[typing.Tuple[str, int]]
+
+
+if sys.platform == "win32":
+    # On Windows, we cannot remove a read-only file. Make it writable first.
+
+    def _unlink_file(path: str):
+        os.chmod(path, 0o0700)
+        os.unlink(path)
+
+    def _rmtree(path: str):
+        for r, ds, fs in os.walk(path):
+            for m in fs:
+                os.chmod(os.path.join(r, m), 0o700)
+        shutil.rmtree(path)
+
+else:
+
+    def _unlink_file(path: str):
+        os.unlink(path)
+
+    def _rmtree(path: str):
+        shutil.rmtree(path)
 
 
 class DiffBasedBuildDirectoryBuilder(object):
@@ -75,16 +98,20 @@ class DiffBasedBuildDirectoryBuilder(object):
         new_files = {f.name: f for f in input_root.files}
         new_directories = {d.name: d for d in input_root.directories}
         file_to_fetch = []
+        # clear unwanted files and directories.
+        for name in os.listdir(directory_local):
+            t = os.path.join(directory_local, name)
+            if os.path.isfile(t) and name not in new_files:
+                _unlink_file(t)
+            elif os.path.isdir(t) and name not in new_directories:
+                _rmtree(t)
         # Diff files.
-        for name, f in files.items():
-            if name not in new_files:
-                os.unlink(os.path.join(directory_local, name))
         for name, f in new_files.items():
             if name not in files:
                 file_to_fetch.append(f)
             elif name in files:
                 if f.digest != files[name].digest:
-                    os.unlink(os.path.join(directory_local, name))
+                    _unlink_file(os.path.join(directory_local, name))
                     file_to_fetch.append(f)
         self._filesystem.fetch_to(
             self._cas_helper, file_to_fetch, directory_local
@@ -94,9 +121,6 @@ class DiffBasedBuildDirectoryBuilder(object):
                 raise RuntimeError(f"missing file {f.name}")
         # Diff directories.
         directory_to_fetch = collections.defaultdict(list)
-        for name, d in directories.items():
-            if name not in new_directories:
-                shutil.rmtree(os.path.join(directory_local, name))
         for name, d in new_directories.items():
             if name not in directories:
                 directory_to_fetch[digest_to_key(d.digest)].append(d)

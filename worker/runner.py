@@ -2,6 +2,7 @@ import hashlib
 import os
 import os.path
 import subprocess
+import sys
 import threading
 import typing
 
@@ -94,11 +95,15 @@ def execute_command(
     env = {}
     for each_env in command.environment_variables:
         env[each_env.name] = each_env.value
-    setup_xcode_env(env)
+
+    if sys.platform == "darwin":
+        setup_xcode_env(env)
+    elif sys.platform == "win32":
+        env["SystemRoot"] = "c:\\Windows"
     result = subprocess.run(
         command.arguments,
         env=env,
-        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=working_directory,
     )
