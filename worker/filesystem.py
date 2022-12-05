@@ -2,6 +2,7 @@ import collections
 import io
 import os
 import os.path
+import sys
 import typing
 import threading
 
@@ -23,6 +24,10 @@ class LocalHardlinkFilesystem(object):
         self._download_lock = threading.Lock()
         self._file_locks: typing.Dict[str, threading.Lock] = {}
 
+    def init(self):
+        if not os.path.exists(self._cache_root_dir):
+            os.makedirs(self._cache_root_dir)
+
     def _link_existing_files(
         self, fnode_list: typing.List[FileNode], target_dir: str
     ) -> typing.List[FileNode]:
@@ -39,6 +44,8 @@ class LocalHardlinkFilesystem(object):
                 if os.path.exists(path_in_cache):
                     target_path = os.path.join(target_dir, fnode.name)
                     if os.path.exists(target_path):
+                        if sys.platform == "win32":
+                            os.chmod(target_path, 0o700)
                         os.unlink(target_path)
                     os.link(path_in_cache, target_path)
                 else:

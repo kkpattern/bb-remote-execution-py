@@ -39,7 +39,7 @@ class WorkerThreadMain(threading.Thread):
         self._desired_state = ThreadWorkerState[DesiredState](
             DesiredState(idle={})
         )
-        self._worker_id = {"id": "test", "thread": str(worker_iid)}
+        self._worker_id = {"id": "test-win", "thread": str(worker_iid)}
 
         self._operation_queue_stub = OperationQueueStub(
             self._operation_queue_channel
@@ -90,7 +90,7 @@ class WorkerThreadMain(threading.Thread):
         synchronize_request = SynchronizeRequest(
             worker_id=self._worker_id,
             instance_name_prefix="",
-            platform={"properties": [{"name": "os", "value": "macos"}]},
+            platform={"properties": [{"name": "os", "value": "windows"}]},
             current_state=current_state,
         )
         return self._operation_queue_stub.Synchronize(synchronize_request)
@@ -99,7 +99,7 @@ class WorkerThreadMain(threading.Thread):
         synchronize_request = SynchronizeRequest(
             worker_id=self._worker_id,
             instance_name_prefix="",
-            platform={"properties": [{"name": "os", "value": "macos"}]},
+            platform={"properties": [{"name": "os", "value": "windows"}]},
             current_state=current_state,
         )
         return self._operation_queue_stub.Synchronize.future(
