@@ -111,7 +111,9 @@ class CASHelper(object):
         self._byte_steam_stub = cas_byte_stream_stub
         self._msg_size_bytes_limit = msg_size_bytes_limit
 
-    def fetch_all(self, digests: typing.Iterable[Digest]):
+    def fetch_all(
+        self, digests: typing.Iterable[Digest]
+    ) -> typing.Iterator[typing.Tuple[Digest, int, bytes]]:
         batch = FetchBatch()
         batch_list = [batch]
         bytes_limit = self._msg_size_bytes_limit
@@ -269,7 +271,9 @@ class CASCache(object):
                 missing_list.append(each)
         return (result_list, missing_list)
 
-    def fetch_all(self, digests: typing.Iterable[Digest]):
+    def fetch_all(
+        self, digests: typing.Iterable[Digest]
+    ) -> typing.Iterator[typing.Tuple[Digest, int, bytes]]:
         result_list, missing_list = self._fetch_all_in_cache(digests)
         if missing_list:
             for d, offset, data in self._backend.fetch_all(missing_list):
