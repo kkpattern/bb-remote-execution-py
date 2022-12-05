@@ -10,6 +10,19 @@ from build.bazel.remote.execution.v2.remote_execution_pb2 import Digest
 from build.bazel.remote.execution.v2.remote_execution_pb2 import FileNode
 
 
+if sys.platform == "win32":
+    # On Windows, we cannot remove a read-only file. Make it writable first.
+
+    def _unlink_file(path: str):
+        os.chmod(path, 0o0700)
+        os.unlink(path)
+
+else:
+
+    def _unlink_file(path: str):
+        os.unlink(path)
+
+
 def digest_to_cache_name(digest: Digest):
     """Convert digest to "{hash}_{size}"."""
     return "{0}_{1}".format(digest.hash, digest.size_bytes)
@@ -44,9 +57,7 @@ class LocalHardlinkFilesystem(object):
                 if os.path.exists(path_in_cache):
                     target_path = os.path.join(target_dir, fnode.name)
                     if os.path.exists(target_path):
-                        if sys.platform == "win32":
-                            os.chmod(target_path, 0o700)
-                        os.unlink(target_path)
+                        _unlink_file(target_path)
                     os.link(path_in_cache, target_path)
                 else:
                     missing_files.append(fnode)

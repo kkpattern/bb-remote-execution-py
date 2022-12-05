@@ -103,7 +103,7 @@ def execute_command(
     result = subprocess.run(
         command.arguments,
         env=env,
-        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         cwd=working_directory,
     )
