@@ -37,8 +37,18 @@ def main():
                 )
                 thread_main.start()
                 worker_threads.append(thread_main)
-            for t in worker_threads:
-                t.join()
+            # On Windows platform, join will total block main thread. We need
+            # signal handler to worker so we use timeout here.
+            while True:
+                for t in worker_threads:
+                    t.join(timeout=1)
+                any_alived = False
+                for t in worker_threads:
+                    if t.is_alive():
+                        any_alived = True
+                        break
+                if not any_alived:
+                    break
 
 
 if __name__ == "__main__":
