@@ -7,6 +7,7 @@ import typing
 from build.bazel.remote.execution.v2.remote_execution_pb2 import Directory
 from build.bazel.remote.execution.v2.remote_execution_pb2 import Digest
 
+from .cas import CASCache
 from .cas import CASHelper
 from .util import digest_to_key
 from .filesystem import LocalHardlinkFilesystem
@@ -26,6 +27,10 @@ class DiffBasedBuildDirectoryBuilder(object):
     ):
         self._root_local = root_local
         self._cas_helper = cas_helper
+        # 10MB directory blob cache.
+        self._directory_blob_cache = CASCache(
+            self._cas_helper, 10 * 1024 * 1024
+        )
         self._filesystem = filesystem
         self._current_root_digest: typing.Optional[Digest] = None
         self._digest_to_directory: typing.Dict[
@@ -102,7 +107,9 @@ class DiffBasedBuildDirectoryBuilder(object):
         for dlist in directory_to_fetch.values():
             for d in dlist:
                 digest_list.append(d.digest)
-        for digest, offset, data in self._cas_helper.fetch_all(digest_list):
+        for digest, offset, data in self._directory_blob_cache.fetch_all(
+            digest_list
+        ):
             key = digest_to_key(digest)
             # TODO: missing.
             if key in directory_to_fetch:
