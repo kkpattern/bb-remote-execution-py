@@ -19,7 +19,7 @@ from build.bazel.remote.execution.v2.remote_execution_pb2_grpc import (
 from .cas import CASHelper
 from .state import ThreadWorkerState
 from .runner import RunnerThread
-from .directorybuilder import DiffBasedBuildDirectoryBuilder
+from .directorybuilder import TopLevelCachedDirectoryBuilder
 
 
 class WorkerThreadMain(threading.Thread):
@@ -48,15 +48,17 @@ class WorkerThreadMain(threading.Thread):
         action_cache_stub = ActionCacheStub(self._cas_channel)
         cas_byte_stream_stub = ByteStreamStub(self._cas_channel)
         cas_helper = CASHelper(cas_stub, cas_byte_stream_stub)
+        self._directory_builder = TopLevelCachedDirectoryBuilder(
+            "tmp/{0}/build".format(worker_iid),
+            "tmp/{0}/cache".format(worker_iid),
+            cas_helper,
+            filesystem,
+        )
         self._runner_thread = RunnerThread(
             cas_stub,
             cas_helper,
             action_cache_stub,
-            DiffBasedBuildDirectoryBuilder(
-                "tmp/{0}".format(worker_iid),
-                cas_helper,
-                filesystem,
-            ),
+            self._directory_builder,
             self._current_state,
             self._desired_state,
         )
@@ -64,6 +66,7 @@ class WorkerThreadMain(threading.Thread):
         self._shutdown_notified = threading.Event()
 
     def run(self):
+        self._directory_builder.init()
         self._runner_thread.start()
         sync_after = None
         while True:

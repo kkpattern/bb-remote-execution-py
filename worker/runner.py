@@ -31,7 +31,7 @@ from .cas import CASHelper
 from .cas import FileProvider
 
 from .state import ThreadWorkerState
-from .directorybuilder import DiffBasedBuildDirectoryBuilder
+from .directorybuilder import IDirectoryBuilder
 from .util import setup_xcode_env
 
 
@@ -78,7 +78,7 @@ def prepare_output_dirs(command: Command, root: str) -> None:
 
 
 def execute_command(
-    build_directory_builder: DiffBasedBuildDirectoryBuilder,
+    build_directory_builder: IDirectoryBuilder,
     cas_helper: CASHelper,
     command: Command,
     input_root_digest: Digest,
@@ -168,7 +168,7 @@ class RunnerThread(threading.Thread):
         cas_stub: ContentAddressableStorageStub,
         cas_helper: CASHelper,
         action_cache_stub,
-        build_directory_builder: DiffBasedBuildDirectoryBuilder,
+        build_directory_builder: IDirectoryBuilder,
         current_state: ThreadWorkerState[CurrentState],
         desired_state: ThreadWorkerState[DesiredState],
     ):
