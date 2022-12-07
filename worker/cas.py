@@ -134,19 +134,11 @@ class CASHelper(object):
             if batch.digests:
                 request = BatchReadBlobsRequest(digests=batch.digests)
                 response = self._cas_stub.BatchReadBlobs(request)
-                received_blob_count = 0
                 for each in response.responses:
                     if each.status.code != grpc.StatusCode.OK.value[0]:
                         print(each.status.message)
                         continue
                     yield each.digest, 0, each.data
-                    received_blob_count += 1
-                if received_blob_count != len(batch.digests):
-                    raise RuntimeError(
-                        "Not much {0} {1}".format(
-                            received_blob_count, len(batch.digests)
-                        )
-                    )
 
         for each_digest in large_blob.values():
             bytes_stream = self._read_bytes_from_stream(each_digest)
@@ -161,19 +153,15 @@ class CASHelper(object):
             resource_name=resource_name, read_offset=0, read_limit=0
         )
         offset = 0
-        sha256 = hashlib.sha256()
         for response in self._byte_steam_stub.Read(request):
             if not response.data:
                 continue
-            sha256.update(response.data)
             yield offset, response.data
             received_bytes = len(response.data)
             offset += received_bytes
             if offset >= digest.size_bytes:
                 assert offset == digest.size_bytes
                 break
-        if sha256.hexdigest() != digest.hash:
-            raise ValueError("Hash not match")
 
     def update_all(self, provider_list: typing.Iterable[FileProvider]):
         batch = UpdateBatch()
