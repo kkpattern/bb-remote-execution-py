@@ -13,6 +13,7 @@ from build.bazel.remote.execution.v2.remote_execution_pb2 import Digest
 from build.bazel.remote.execution.v2.remote_execution_pb2 import FileNode
 
 from .cacheinfo import FileCacheInfo
+from .lock import VariableLock
 from .util import set_read_only
 from .util import set_read_exec_only
 from .util import link_file
@@ -31,7 +32,7 @@ class LocalHardlinkFilesystem(object):
         self._cache_root_dir = cache_root_dir
         self._global_lock = threading.Lock()
         self._download_lock = threading.Lock()
-        self._file_locks: typing.Dict[str, threading.Lock] = {}
+        self._file_lock = VariableLock()
         self._file_cache_info: typing.Dict[str, FileCacheInfo] = {}
 
     def init(self):
@@ -114,8 +115,7 @@ class LocalHardlinkFilesystem(object):
         for fnode in fnode_list:
             name_in_cache = digest_to_cache_name(fnode.digest)
             path_in_cache = os.path.join(self._cache_root_dir, name_in_cache)
-            lock = self._acquire_file_lock(path_in_cache)
-            try:
+            with self._file_lock.lock(path_in_cache):
                 if os.path.exists(path_in_cache):
                     if name_in_cache not in self._file_cache_info:
                         corrupted = True
@@ -139,8 +139,6 @@ class LocalHardlinkFilesystem(object):
                         missing_files.append(fnode)
                 else:
                     missing_files.append(fnode)
-            finally:
-                lock.release()
         return missing_files
 
     def fetch_to(
@@ -238,8 +236,7 @@ class LocalHardlinkFilesystem(object):
                     break
             path_in_cache = os.path.join(self._cache_root_dir, name_in_cache)
             path_in_temp = path_in_cache + ".tmp"
-            lock = self._acquire_file_lock(path_in_cache)
-            try:
+            with self._file_lock.lock(path_in_cache):
                 if os.path.exists(path_in_cache):
                     raise RuntimeError(f"{path_in_cache} shouldn't exist")
                 os.rename(path_in_temp, path_in_cache)
@@ -250,49 +247,7 @@ class LocalHardlinkFilesystem(object):
                 self._file_cache_info[name_in_cache] = FileCacheInfo(
                     os.stat(path_in_cache)
                 )
-            finally:
-                lock.release()
         missing_files = self._link_existing_files(
             files_to_download, link_target_dir, copy_file=copy_file
         )
         assert not missing_files
-
-    def _acquire_file_lock(self, path_in_cache: str) -> threading.Lock:
-        """Acquire a file lock. If no lock exists a new lock will be created.
-        return the acquired lock so caller can release it.
-        """
-        while True:
-            if path_in_cache in self._file_locks:
-                lock = self._file_locks[path_in_cache]
-                lock.acquire()
-                if self._file_locks.get(path_in_cache, None) is not lock:
-                    # 持有的锁被别的线程删除了, 释放他然后重新来.
-                    lock.release()
-                    continue
-                else:
-                    # 成功持有锁.
-                    break
-            else:
-                with self._global_lock:
-                    if path_in_cache not in self._file_locks:
-                        # 第一个创建锁.
-                        lock = threading.Lock()
-                        lock.acquire()
-                        self._file_locks[path_in_cache] = lock
-                        break
-                    else:
-                        # 同时有其他人创建锁成功了, 重新走流程申请这个锁.
-                        continue
-        return lock
-
-    def _remove_file_lock(
-        self, name_in_cache: str, lock_to_remove: threading.Lock
-    ):
-        # 先获取到锁本身.
-        lock_to_remove.acquire()
-        try:
-            with self._global_lock:
-                if self._file_locks.get(name_in_cache, None) is lock_to_remove:
-                    del self._file_locks[name_in_cache]
-        finally:
-            lock_to_remove.release()
