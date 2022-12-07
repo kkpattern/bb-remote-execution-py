@@ -6,7 +6,7 @@ test:
     - . ./.bbtest/bin/activate
     - pip install ".[test]"
   script:
-    - python -m pytest tests
+    - python -m pytest tests --full
   only:
     - merge_requests
 
