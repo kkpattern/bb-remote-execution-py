@@ -1,4 +1,9 @@
+stages:
+  - test
+  - deploy
+
 test:
+  stage: test
   tags:
     - python3-cicd
   before_script:
@@ -11,6 +16,7 @@ test:
     - merge_requests
 
 mypy-check:
+  stage: test
   tags:
     - python3-cicd
   before_script:
@@ -23,3 +29,19 @@ mypy-check:
     - mypy --install-types --non-interactive src/bbworker
   only:
     - merge_requests
+
+upload:
+  stage: deploy
+  tags:
+    - python3-cicd
+  before_script:
+    - python3 -m venv .build
+    - . ./.build/bin/activate
+    - pip install build
+    - pip install twine==1.15.0
+  script:
+    - python -m build
+    - twine upload --repository-url $PYPISERVER_URL -u $PYPISERVER_USERNAME -p $PYPISERVER_PASSWORD dist/*
+  only:
+    - tags
+  when: manual
