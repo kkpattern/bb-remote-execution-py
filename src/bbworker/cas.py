@@ -21,6 +21,110 @@ from build.bazel.remote.execution.v2.remote_execution_pb2_grpc import (
 )
 
 
+class IProvider:
+    @property
+    def size_bytes(self) -> int:
+        raise NotImplementedError(
+            f"This method should be implmented in {self.__class__.__name__}"
+        )
+
+    @property
+    def hash_(self) -> str:
+        raise NotImplementedError(
+            f"This method should be implmented in {self.__class__.__name__}"
+        )
+
+    def read(
+        self, segment_size: typing.Optional[int] = None
+    ) -> typing.Iterator[bytes]:
+        raise NotImplementedError(
+            f"This method should be implmented in {self.__class__.__name__}"
+        )
+
+    def read_all(self) -> bytes:
+        raise NotImplementedError(
+            f"This method should be implmented in {self.__class__.__name__}"
+        )
+
+
+class FileProvider(IProvider):
+    def __init__(self, filepath: str):
+        self._filepath = filepath
+        self._size_bytes: typing.Optional[int] = None
+        self._digest: typing.Optional[str] = None
+
+    @property
+    def size_bytes(self) -> int:
+        if self._size_bytes is None:
+            self._size_bytes = os.path.getsize(self._filepath)
+        return self._size_bytes
+
+    @property
+    def hash_(self) -> str:
+        if self._digest is None:
+            sha256 = hashlib.sha256()
+            for data in self.read(3 * 1024 * 1024):
+                sha256.update(data)
+            self._digest = sha256.hexdigest()
+        return self._digest
+
+    def read(
+        self, segment_size: typing.Optional[int] = None
+    ) -> typing.Iterator[bytes]:
+        if segment_size is None:
+            with open(self._filepath, "rb") as f:
+                data = f.read()
+            return data
+        else:
+            with open(self._filepath, "rb") as f:
+                while True:
+                    data = f.read(segment_size)
+                    if data:
+                        yield data
+                    else:
+                        break
+
+    def read_all(self) -> bytes:
+        with open(self._filepath, "rb") as f:
+            data = f.read()
+        return data
+
+
+class BytesProvider(IProvider):
+    def __init__(self, data: bytes):
+        self._data = data
+        self._size_bytes = len(self._data)
+        self._digest: typing.Optional[str] = None
+
+    @property
+    def size_bytes(self) -> int:
+        return self._size_bytes
+
+    @property
+    def hash_(self) -> str:
+        if self._digest is None:
+            self._digest = hashlib.sha256(self._data).hexdigest()
+        return self._digest
+
+    def read(
+        self, segment_size: typing.Optional[int] = None
+    ) -> typing.Iterator[bytes]:
+        if segment_size is None:
+            return self._data
+        else:
+            start = 0
+            end = segment_size
+            while True:
+                yield self._data[start:end]
+                start += segment_size
+                end += segment_size
+                if start >= self._size_bytes:
+                    break
+
+    def read_all(self) -> bytes:
+        return self._data
+
+
 class FetchBatch(object):
     def __init__(self) -> None:
         self._digests: typing.List[Digest] = []
@@ -41,11 +145,11 @@ class FetchBatch(object):
 
 class UpdateBatch(object):
     def __init__(self):
-        self._providers = []
+        self._providers: typing.List[IProvider] = []
         self._total_size_bytes = 0
 
     @property
-    def providers(self):
+    def providers(self) -> typing.List[IProvider]:
         return self._providers
 
     @property
@@ -55,47 +159,6 @@ class UpdateBatch(object):
     def append_provider(self, provider):
         self._providers.append(provider)
         self._total_size_bytes += provider.size_bytes
-
-
-class FileProvider(object):
-    def __init__(self, filepath: str):
-        self._filepath = filepath
-        self._size_bytes: typing.Optional[int] = None
-        self._digest: typing.Optional[str] = None
-
-    @property
-    def size_bytes(self):
-        if self._size_bytes is None:
-            self._size_bytes = os.path.getsize(self._filepath)
-        return self._size_bytes
-
-    @property
-    def digest(self):
-        if self._digest is None:
-            sha256 = hashlib.sha256()
-            for data in self.read(3 * 1024 * 1024):
-                sha256.update(data)
-            self._digest = sha256.hexdigest()
-        return self._digest
-
-    def read(self, segment_size: typing.Optional[int] = None):
-        if segment_size is None:
-            with open(self._filepath, "rb") as f:
-                data = f.read()
-            return data
-        else:
-            with open(self._filepath, "rb") as f:
-                while True:
-                    data = f.read(segment_size)
-                    if data:
-                        yield data
-                    else:
-                        break
-
-    def read_all(self):
-        with open(self._filepath, "rb") as f:
-            data = f.read()
-        return data
 
 
 class CASHelper(object):
@@ -163,7 +226,7 @@ class CASHelper(object):
                 assert offset == digest.size_bytes
                 break
 
-    def update_all(self, provider_list: typing.Iterable[FileProvider]):
+    def update_all(self, provider_list: typing.Iterable[IProvider]):
         batch = UpdateBatch()
         batch_list = [batch]
         bytes_limit = self._msg_size_bytes_limit
@@ -179,12 +242,11 @@ class CASHelper(object):
         for batch in batch_list:
             requests: typing.List[BatchUpdateBlobsRequest.Request] = []
             for provider in batch.providers:
-                digest = provider.digest
                 data = provider.read_all()
                 requests.append(
                     BatchUpdateBlobsRequest.Request(
                         digest={
-                            "hash": digest,
+                            "hash": provider.hash_,
                             "size_bytes": provider.size_bytes,
                         },
                         data=data,

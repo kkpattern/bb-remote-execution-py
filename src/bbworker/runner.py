@@ -1,4 +1,3 @@
-import hashlib
 import os
 import os.path
 import queue
@@ -28,6 +27,8 @@ from build.bazel.remote.execution.v2.remote_execution_pb2_grpc import (
 from remoteworker.remoteworker_pb2 import CurrentState
 from remoteworker.remoteworker_pb2 import DesiredState
 
+from .cas import IProvider
+from .cas import BytesProvider
 from .cas import CASHelper
 from .cas import FileProvider
 
@@ -129,6 +130,8 @@ def execute_command(
         stderr=subprocess.PIPE,
         cwd=working_directory,
     )
+    stdout_digest = None
+    stderr_digest = None
     if result.returncode == 0:
         # Check outputs.
         if command.output_paths:
@@ -147,8 +150,25 @@ def execute_command(
                     "Output directory is not implemented yet."
                 )
         # Then generate ActionResult.
-        update_provider_list = []
+        update_provider_list: typing.List[IProvider] = []
         output_files = []
+
+        if result.stdout:
+            stdout_provider = BytesProvider(result.stdout)
+            stdout_digest = Digest(
+                hash=stdout_provider.hash_,
+                size_bytes=stdout_provider.size_bytes,
+            )
+            update_provider_list.append(stdout_provider)
+
+        if result.stderr:
+            stderr_provider = BytesProvider(result.stderr)
+            stderr_digest = Digest(
+                hash=stderr_provider.hash_,
+                size_bytes=stderr_provider.size_bytes,
+            )
+            update_provider_list.append(stderr_provider)
+
         for each in output_paths:
             local_path = os.path.join(build_directory, each)
             if os.path.isfile(local_path):
@@ -159,7 +179,7 @@ def execute_command(
                     OutputFile(
                         path=each,
                         digest={
-                            "hash": provider.digest,
+                            "hash": provider.hash_,
                             "size_bytes": provider.size_bytes,
                         },
                     )
@@ -178,17 +198,11 @@ def execute_command(
         )
     )
     # Upload action result.
-    stdout_raw = result.stdout if result.stdout else b""
-    stdout_hash = hashlib.sha256(stdout_raw).hexdigest()
-    stderr_raw = result.stderr if result.stderr else b""
-    stderr_hash = hashlib.sha256(stderr_raw).hexdigest()
     action_result = ActionResult(
         output_files=output_files,
         exit_code=result.returncode,
-        stdout_raw=stdout_raw,
-        stdout_digest={"hash": stdout_hash, "size_bytes": len(stdout_raw)},
-        stderr_raw=stderr_raw,
-        stderr_digest={"hash": stderr_hash, "size_bytes": len(stderr_raw)},
+        stdout_digest=stdout_digest,
+        stderr_digest=stderr_digest,
     )
     return action_result
 
