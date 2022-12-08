@@ -234,8 +234,8 @@ class LocalHardlinkFilesystem(object):
         # set mode.
         for name_in_cache, files in cache_name_to_files.items():
             executable = False
-            for f in files:
-                if f.is_executable:
+            for fn in files:
+                if fn.is_executable:
                     executable = True
                     break
             path_in_cache = os.path.join(self._cache_root_dir, name_in_cache)
