@@ -157,9 +157,13 @@ class LocalHardlinkFilesystem(object):
             real_download_list = self._link_existing_files(
                 missing_files, target_dir, copy_file=copy_file
             )
-            self._batch_download(
-                backend, real_download_list, target_dir, copy_file=copy_file
-            )
+            if real_download_list:
+                self._batch_download(
+                    backend,
+                    real_download_list,
+                    target_dir,
+                    copy_file=copy_file,
+                )
         # check all files exist.
         for f in files:
             if not os.path.exists(os.path.join(target_dir, f.name)):

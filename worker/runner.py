@@ -1,6 +1,7 @@
 import hashlib
 import os
 import os.path
+import queue
 import subprocess
 import sys
 import threading
@@ -30,7 +31,6 @@ from remoteworker.remoteworker_pb2 import DesiredState
 from .cas import CASHelper
 from .cas import FileProvider
 
-from .state import ThreadWorkerState
 from .directorybuilder import IDirectoryBuilder
 from .util import setup_xcode_env
 
@@ -78,20 +78,33 @@ def prepare_output_dirs(command: Command, root: str) -> None:
 
 
 def execute_command(
+    state_queue: queue.Queue,
     build_directory_builder: IDirectoryBuilder,
+    build_directory: str,
     cas_helper: CASHelper,
+    action_digest: Digest,
     command: Command,
     input_root_digest: Digest,
     input_root: Directory,
 ) -> ActionResult:
-    build_directory_builder.build(input_root_digest, input_root)
-    prepare_output_dirs(command, build_directory_builder.local_root)
+    state_queue.put(
+        CurrentState(
+            executing={
+                "action_digest": action_digest,
+                "fetching_inputs": {},
+            }
+        )
+    )
+    build_directory_builder.build(
+        input_root_digest, input_root, build_directory
+    )
+    prepare_output_dirs(command, build_directory)
     if command.working_directory:
         working_directory = os.path.join(
-            build_directory_builder.local_root, command.working_directory
+            build_directory, command.working_directory
         )
     else:
-        working_directory = build_directory_builder.local_root
+        working_directory = build_directory
     env = {}
     for each_env in command.environment_variables:
         env[each_env.name] = each_env.value
@@ -100,6 +113,15 @@ def execute_command(
         setup_xcode_env(env)
     elif sys.platform == "win32":
         env["SystemRoot"] = "c:\\Windows"
+
+    state_queue.put(
+        CurrentState(
+            executing={
+                "action_digest": action_digest,
+                "running": {},
+            }
+        )
+    )
     result = subprocess.run(
         command.arguments,
         env=env,
@@ -116,7 +138,7 @@ def execute_command(
             output_paths.extend(command.output_directories)
         # First check all file exists.
         for each in output_paths:
-            local_path = os.path.join(build_directory_builder.local_root, each)
+            local_path = os.path.join(build_directory, each)
             if not os.path.exists(local_path):
                 # TODO:
                 raise Exception(f"{each} not generated.")
@@ -128,7 +150,7 @@ def execute_command(
         update_provider_list = []
         output_files = []
         for each in output_paths:
-            local_path = os.path.join(build_directory_builder.local_root, each)
+            local_path = os.path.join(build_directory, each)
             if os.path.isfile(local_path):
                 provider = FileProvider(local_path)
                 update_provider_list.append(provider)
@@ -146,6 +168,15 @@ def execute_command(
         cas_helper.update_all(update_provider_list)
     else:
         output_files = []
+
+    state_queue.put(
+        CurrentState(
+            executing={
+                "action_digest": action_digest,
+                "uploading_outputs": {},
+            }
+        )
+    )
     # Upload action result.
     stdout_raw = result.stdout if result.stdout else b""
     stdout_hash = hashlib.sha256(stdout_raw).hexdigest()
@@ -169,34 +200,43 @@ class RunnerThread(threading.Thread):
         cas_helper: CASHelper,
         action_cache_stub,
         build_directory_builder: IDirectoryBuilder,
-        current_state: ThreadWorkerState[CurrentState],
-        desired_state: ThreadWorkerState[DesiredState],
+        build_directory: str,
+        current_state_queue: "queue.Queue[CurrentState]",
+        desired_state_queue: "queue.Queue[DesiredState]",
     ):
         super().__init__()
         self._cas_stub = cas_stub
         self._cas_helper = cas_helper
         self._action_cache_stub = action_cache_stub
         self._build_directory_builder = build_directory_builder
-        self._current_state = current_state
-        self._desired_state = desired_state
+        self._build_directory = build_directory
+        self._current_state_queue = current_state_queue
+        self._desired_state_queue = desired_state_queue
         self._stop_event = threading.Event()
 
     def notify_stop(self):
         self._stop_event.set()
-        self._desired_state.set_state(DesiredState(idle={}))
+        self._desired_state_queue.put(DesiredState(idle={}))
 
     def run(self):
+        self._current_state_queue.put(CurrentState(idle={}))
         while True:
             if self._stop_event.is_set():
                 break
-            desired_state = self._desired_state.get_state()
+            desired_state = self._desired_state_queue.get(block=True)
+            # we only handle the newest desired state.
+            while True:
+                try:
+                    desired_state = self._desired_state_queue.get_nowait()
+                except queue.Empty:
+                    break
             # NOTE: ALWAYS set back at least one new current_state after get a
             # new state.
             if desired_state.WhichOneof("worker_state") == "executing":
                 action_digest = desired_state.executing.action_digest
                 print(f"Action {action_digest.hash} started")
                 should_executing = desired_state.executing
-                self._current_state.set_state(
+                self._current_state_queue.put(
                     CurrentState(
                         executing={
                             "action_digest": action_digest,
@@ -211,17 +251,12 @@ class RunnerThread(threading.Thread):
                     action.input_root_digest,
                 )
                 if command and input_root:
-                    self._current_state.set_state(
-                        CurrentState(
-                            executing={
-                                "action_digest": action_digest,
-                                "running": {},
-                            }
-                        )
-                    )
                     action_result = execute_command(
+                        self._current_state_queue,
                         self._build_directory_builder,
+                        self._build_directory,
                         self._cas_helper,
+                        action_digest,
                         command,
                         action.input_root_digest,
                         input_root,
@@ -238,7 +273,7 @@ class RunnerThread(threading.Thread):
                         cached_result=False,
                         status={"code": grpc.StatusCode.OK.value[0]},
                     )
-                    self._current_state.set_state(
+                    self._current_state_queue.put(
                         CurrentState(
                             executing={
                                 "action_digest": action_digest,
@@ -246,9 +281,6 @@ class RunnerThread(threading.Thread):
                             }
                         )
                     )
-                else:
-                    # TODO: report error?
-                    self._current_state.set_state(CurrentState(idle={}))
                 print(f"Action {action_digest.hash} finished")
             else:
-                self._current_state.set_state(CurrentState(idle={}))
+                self._current_state_queue.put(CurrentState(idle={}))
