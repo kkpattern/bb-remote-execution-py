@@ -45,6 +45,10 @@ def set_read_exec_only(target: str):
     os.chmod(target, stat.S_IRUSR | stat.S_IXUSR)
 
 
+def set_read_exec_write(target: str):
+    os.chmod(target, stat.S_IRUSR | stat.S_IXUSR | stat.S_IWUSR)
+
+
 if sys.platform == "win32":
     import _winapi
 

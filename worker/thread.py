@@ -1,3 +1,4 @@
+import queue
 import time
 import threading
 import typing
@@ -17,9 +18,8 @@ from build.bazel.remote.execution.v2.remote_execution_pb2_grpc import (
 )
 
 from .cas import CASHelper
-from .state import ThreadWorkerState
 from .runner import RunnerThread
-from .directorybuilder import TopLevelCachedDirectoryBuilder
+from .directorybuilder import IDirectoryBuilder
 
 
 class WorkerThreadMain(threading.Thread):
@@ -28,17 +28,14 @@ class WorkerThreadMain(threading.Thread):
         operation_queue_channel,
         cas_channel,
         filesystem,
+        directory_builder: IDirectoryBuilder,
         worker_iid: int,
     ):
         super().__init__()
         self._operation_queue_channel = operation_queue_channel
         self._cas_channel = cas_channel
-        self._current_state = ThreadWorkerState[CurrentState](
-            CurrentState(idle={})
-        )
-        self._desired_state = ThreadWorkerState[DesiredState](
-            DesiredState(idle={})
-        )
+        self._current_state_queue: "queue.Queue[CurrentState]" = queue.Queue()
+        self._desired_state_queue: "queue.Queue[DesiredState]" = queue.Queue()
         self._worker_id = {"id": "test-win", "thread": str(worker_iid)}
 
         self._operation_queue_stub = OperationQueueStub(
@@ -48,46 +45,44 @@ class WorkerThreadMain(threading.Thread):
         action_cache_stub = ActionCacheStub(self._cas_channel)
         cas_byte_stream_stub = ByteStreamStub(self._cas_channel)
         cas_helper = CASHelper(cas_stub, cas_byte_stream_stub)
-        self._directory_builder = TopLevelCachedDirectoryBuilder(
-            "tmp/{0}/build".format(worker_iid),
-            "tmp/{0}/cache".format(worker_iid),
-            cas_helper,
-            filesystem,
-        )
         self._runner_thread = RunnerThread(
             cas_stub,
             cas_helper,
             action_cache_stub,
-            self._directory_builder,
-            self._current_state,
-            self._desired_state,
+            directory_builder,
+            "tmp/{0}".format(worker_iid),
+            self._current_state_queue,
+            self._desired_state_queue,
         )
         self._sync_future: typing.Optional[grpc.Future] = None
         self._shutdown_notified = threading.Event()
 
     def run(self):
-        self._directory_builder.init()
         self._runner_thread.start()
-        sync_after = None
+        current_state = self._current_state_queue.get(block=True, timeout=None)
         while True:
             if self._shutdown_notified.is_set():
                 # Wait runner thread to finish.
                 self._runner_thread.join()
                 break
             else:
-                current_state = self._current_state.get_state(sync_after)
                 self._sync_future = self._synchronize_future(current_state)
                 try:
                     response = self._sync_future.result()
                 except grpc.FutureCancelledError:
-                    sync_after = None
-                else:
-                    sync_after = (
-                        response.next_synchronization_at.seconds - time.time()
-                    )
-                    self._desired_state.set_state(response.desired_state)
-                finally:
                     self._sync_future = None
+                else:
+                    self._sync_future = None
+                    sync_at = response.next_synchronization_at
+                    sync_time = sync_at.seconds + sync_at.nanos * 0.000000001
+                    sync_after = max(0, sync_time - time.time())
+                    self._desired_state_queue.put(response.desired_state)
+                    try:
+                        current_state = self._current_state_queue.get(
+                            block=True, timeout=sync_after
+                        )
+                    except queue.Empty:
+                        pass
 
     def _synchronize(self, current_state: CurrentState) -> SynchronizeResponse:
         synchronize_request = SynchronizeRequest(

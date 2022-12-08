@@ -1,30 +1,49 @@
+import concurrent.futures
 import os
 import os.path
+import random
 import stat
 import sys
 import tempfile
+import typing
+import uuid
 
 import pytest
 
-from worker.directorybuilder import TopLevelCachedDirectoryBuilder
+from worker.directorybuilder import SharedTopLevelCachedDirectoryBuilder
 from worker.filesystem import LocalHardlinkFilesystem
 
 from worker.util import unlink_readonly_file
+from worker.util import set_read_exec_write
 
 
-def _assert_directory(dir_data, dir_path: str):
+def _assert_directory(
+    dir_data,
+    dir_path: str,
+    skip_cache: typing.Optional[typing.Iterable[str]] = None,
+):
+    if skip_cache is None:
+        skip_cache = set()
     assert sorted(os.listdir(dir_path)) == sorted(dir_data)
     for k, v in dir_data.items():
+        p = os.path.join(dir_path, k)
+        if k not in skip_cache:
+            assert not (
+                os.stat(p).st_mode & stat.S_IWUSR
+            ), f"{p} should be readony"
         if isinstance(v, bytes):
-            p = os.path.join(dir_path, k)
             assert os.path.isfile(p)
             with open(p, "rb") as f:
                 assert f.read() == v
         elif isinstance(v, dict):
-            _assert_directory(v, os.path.join(dir_path, k))
+            if k in skip_cache:
+                sub_skip_cache = os.listdir(p)
+            else:
+                sub_skip_cache = None
+            _assert_directory(v, p, skip_cache=sub_skip_cache)
 
 
-class TestTopLevelCachedDirectoryBuilder(object):
+class TestSharedTopLevelCachedDirectoryBuilder(object):
     def test_basic_build(self, mock_cas_helper):
         with (
             tempfile.TemporaryDirectory() as filesystem_root,
@@ -47,11 +66,11 @@ class TestTopLevelCachedDirectoryBuilder(object):
             )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
             filesystem.init()
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
-            builder.build(input_root_digest, input_root_directory)
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
 
     @pytest.mark.skipif(
@@ -90,16 +109,18 @@ class TestTopLevelCachedDirectoryBuilder(object):
             )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
             filesystem.init()
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root,
+            skip_cache = ["dir_2", "dir_3"]
+            builder = SharedTopLevelCachedDirectoryBuilder(
                 cache_root,
                 mock_cas_helper,
                 filesystem,
-                skip_cache=["dir_2", "dir_3"],
+                skip_cache=skip_cache,
             )
             builder.init()
-            builder.build(input_root_digest, input_root_directory)
-            _assert_directory(input_root_data, local_root)
+            builder.build(input_root_digest, input_root_directory, local_root)
+            _assert_directory(
+                input_root_data, local_root, skip_cache=skip_cache
+            )
             for test_dir in [
                 os.path.join(local_root, "dir_1"),
                 os.path.join(local_root, "dir_1", "dir_1_1"),
@@ -152,11 +173,11 @@ class TestTopLevelCachedDirectoryBuilder(object):
             )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
             filesystem.init()
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
-            builder.build(input_root_digest, input_root_directory)
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
             for test_dir in [
                 os.path.join(local_root, "dir_1"),
@@ -191,11 +212,13 @@ class TestTopLevelCachedDirectoryBuilder(object):
                 )
                 filesystem = LocalHardlinkFilesystem(filesystem_root)
                 filesystem.init()
-                builder = TopLevelCachedDirectoryBuilder(
-                    local_root, cache_root, mock_cas_helper, filesystem
+                builder = SharedTopLevelCachedDirectoryBuilder(
+                    cache_root, mock_cas_helper, filesystem
                 )
                 builder.init()
-                builder.build(input_root_digest, input_root_directory)
+                builder.build(
+                    input_root_digest, input_root_directory, local_root
+                )
                 _assert_directory(input_root_data, local_root)
             finally:
                 os.chdir(cwd)
@@ -279,17 +302,17 @@ class TestTopLevelCachedDirectoryBuilder(object):
                 )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
             filesystem.init()
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
             for i, d in enumerate(input_root_digest_list):
-                builder.build(d, input_root_directory_list[i])
+                builder.build(d, input_root_directory_list[i], local_root)
                 _assert_directory(input_root_data_list[i], local_root)
             cached_dirs = sorted(os.listdir(cache_root))
             # simulate process restart.
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
             assert cached_dirs == sorted(os.listdir(cache_root))
@@ -374,16 +397,74 @@ class TestTopLevelCachedDirectoryBuilder(object):
                 )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
             filesystem.init()
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
             for i, d in enumerate(input_root_digest_list):
-                builder.build(d, input_root_directory_list[i])
+                builder.build(d, input_root_directory_list[i], local_root)
                 _assert_directory(input_root_data_list[i], local_root)
             for name in os.listdir(filesystem_root):
                 p = os.path.join(filesystem_root, name)
                 assert not os.stat(p).st_mode & stat.S_IWUSR
+
+    def test_validation_keep_file_readonly(self, mock_cas_helper):
+        with (
+            tempfile.TemporaryDirectory() as filesystem_root,
+            tempfile.TemporaryDirectory() as local_root,
+            tempfile.TemporaryDirectory() as cache_root,
+        ):
+            input_root_data_list = [
+                {
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                    },
+                },
+                {
+                    "dir_2": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"d" * 15,
+                    },
+                },
+            ]
+            input_root_digest_list = []
+            input_root_directory_list = []
+            for input_root_data in input_root_data_list:
+                digest = mock_cas_helper.append_directory(input_root_data)
+                input_root_digest_list.append(digest)
+                input_root_directory_list.append(
+                    mock_cas_helper.get_directory_by_digest(digest)
+                )
+            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem.init()
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
+            )
+            builder.init()
+            for i, d in enumerate(input_root_digest_list):
+                builder.build(d, input_root_directory_list[i], local_root)
+                _assert_directory(input_root_data_list[i], local_root)
+            # corrupt the seconds directory.
+            set_read_exec_write(os.path.join(local_root, "dir_2"))
+            with open(os.path.join(local_root, "dir_2", "test"), "wb") as f:
+                f.write(b"xx")
+            builder.init()
+            # all files in filesystem keeps readonly.
+            for name in os.listdir(filesystem_root):
+                p = os.path.join(filesystem_root, name)
+                assert not os.stat(p).st_mode & stat.S_IWUSR
+
+            def _no_fetch_to(*args, **kargs):
+                assert False, "fetch_to should not be called."
+
+            filesystem.fetch_to = _no_fetch_to
+            # the first directory should still in the same.
+            builder.build(
+                input_root_digest_list[0],
+                input_root_directory_list[0],
+                local_root,
+            )
+            _assert_directory(input_root_data_list[0], local_root)
 
     def test_build_verify_mode_changed(self, mock_cas_helper):
         with (
@@ -413,24 +494,26 @@ class TestTopLevelCachedDirectoryBuilder(object):
             )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
             filesystem.init()
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
-            builder.build(input_root_digest, input_root_directory)
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
             # Test dir mode changed.
-            for name in os.listdir(cache_root):
-                p = os.path.join(cache_root, name)
+            cache_dir_root = builder.cache_dir_root
+            for name in os.listdir(cache_dir_root):
+                p = os.path.join(cache_dir_root, name)
                 if os.path.isdir(p):
                     os.chmod(p, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
             # simulate process restart.
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
-            assert not sorted(os.listdir(cache_root))
-            builder.build(input_root_digest, input_root_directory)
+            assert not sorted(os.listdir(cache_dir_root))
+            assert not sorted(os.listdir(builder.cache_digest_root))
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
             # Test file mode changed.
             for dir_, dirnames, filenames in os.walk(cache_root):
@@ -438,12 +521,13 @@ class TestTopLevelCachedDirectoryBuilder(object):
                     p = os.path.join(dir_, name)
                     os.chmod(p, stat.S_IWUSR | stat.S_IRUSR)
             # simulate process restart.
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
-            assert not sorted(os.listdir(cache_root))
-            builder.build(input_root_digest, input_root_directory)
+            assert not sorted(os.listdir(cache_dir_root))
+            assert not sorted(os.listdir(builder.cache_digest_root))
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
 
     def test_build_verify_add_file(self, mock_cas_helper):
@@ -474,26 +558,28 @@ class TestTopLevelCachedDirectoryBuilder(object):
             )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
             filesystem.init()
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
-            builder.build(input_root_digest, input_root_directory)
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
-            for name in os.listdir(cache_root):
-                p = os.path.join(cache_root, name)
+            cache_dir_root = builder.cache_dir_root
+            for name in os.listdir(cache_dir_root):
+                p = os.path.join(cache_dir_root, name)
                 if os.path.isdir(p):
                     os.chmod(p, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
                     with open(os.path.join(p, "new.txt"), "wb") as f:
                         f.write(b"testdata")
                     os.chmod(p, stat.S_IRUSR | stat.S_IXUSR)
             # simulate process restart.
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
-            assert not sorted(os.listdir(cache_root))
-            builder.build(input_root_digest, input_root_directory)
+            assert not sorted(os.listdir(cache_dir_root))
+            assert not sorted(os.listdir(builder.cache_digest_root))
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
 
     def test_build_verify_file_content_change(self, mock_cas_helper):
@@ -524,13 +610,14 @@ class TestTopLevelCachedDirectoryBuilder(object):
             )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
             filesystem.init()
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
-            builder.build(input_root_digest, input_root_directory)
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
-            for dir_, dirnames, filenames in os.walk(cache_root):
+            cache_dir_root = builder.cache_dir_root
+            for dir_, dirnames, filenames in os.walk(cache_dir_root):
                 for name in filenames:
                     p = os.path.join(dir_, name)
                     origin_mode = os.stat(p).st_mode
@@ -539,12 +626,13 @@ class TestTopLevelCachedDirectoryBuilder(object):
                         f.write(b"testoverride")
                     os.chmod(p, origin_mode)
             # simulate process restart.
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
-            assert not sorted(os.listdir(cache_root))
-            builder.build(input_root_digest, input_root_directory)
+            assert not sorted(os.listdir(cache_dir_root))
+            assert not sorted(os.listdir(builder.cache_digest_root))
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
 
     def test_build_verify_large_file(self, mock_cas_helper):
@@ -575,16 +663,16 @@ class TestTopLevelCachedDirectoryBuilder(object):
             )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
             filesystem.init()
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
-            builder.build(input_root_digest, input_root_directory)
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
             cached_dirs = sorted(os.listdir(cache_root))
             # simulate process restart.
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
             assert cached_dirs == sorted(os.listdir(cache_root))
@@ -618,25 +706,27 @@ class TestTopLevelCachedDirectoryBuilder(object):
             )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
             filesystem.init()
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
-            builder.build(input_root_digest, input_root_directory)
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
-            for dir_, dirnames, filenames in os.walk(cache_root):
+            cache_dir_root = builder.cache_dir_root
+            for dir_, dirnames, filenames in os.walk(cache_dir_root):
                 for name in filenames:
                     p = os.path.join(dir_, name)
                     os.chmod(dir_, stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
                     unlink_readonly_file(p)
                     os.chmod(dir_, stat.S_IRUSR | stat.S_IXUSR)
             # simulate process restart.
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
             builder.init()
-            assert not sorted(os.listdir(cache_root))
-            builder.build(input_root_digest, input_root_directory)
+            assert not sorted(os.listdir(cache_dir_root))
+            assert not sorted(os.listdir(builder.cache_digest_root))
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
 
     def test_basic_build_with_cache(self, mock_cas_helper):
@@ -660,16 +750,22 @@ class TestTopLevelCachedDirectoryBuilder(object):
                 input_root_digest
             )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
-            builder_1 = TopLevelCachedDirectoryBuilder(
-                local_root_1, cache_root_1, mock_cas_helper, filesystem
+            builder_1 = SharedTopLevelCachedDirectoryBuilder(
+                cache_root_1, mock_cas_helper, filesystem
             )
-            builder_2 = TopLevelCachedDirectoryBuilder(
-                local_root_2, cache_root_2, mock_cas_helper, filesystem
+            builder_1.init()
+            builder_2 = SharedTopLevelCachedDirectoryBuilder(
+                cache_root_2, mock_cas_helper, filesystem
             )
-            builder_1.build(input_root_digest, input_root_directory)
+            builder_2.init()
+            builder_1.build(
+                input_root_digest, input_root_directory, local_root_1
+            )
             _assert_directory(input_root_data, local_root_1)
 
-            builder_2.build(input_root_digest, input_root_directory)
+            builder_2.build(
+                input_root_digest, input_root_directory, local_root_2
+            )
             _assert_directory(input_root_data, local_root_2)
 
             def should_not_call(*args, **kargs):
@@ -678,9 +774,13 @@ class TestTopLevelCachedDirectoryBuilder(object):
                 ), "should not call filesystem.fetch_to when dir is cached."
 
             filesystem.fetch_to = should_not_call
-            builder_1.build(input_root_digest, input_root_directory)
+            builder_1.build(
+                input_root_digest, input_root_directory, local_root_1
+            )
             _assert_directory(input_root_data, local_root_1)
-            builder_2.build(input_root_digest, input_root_directory)
+            builder_2.build(
+                input_root_digest, input_root_directory, local_root_2
+            )
             _assert_directory(input_root_data, local_root_2)
 
     def test_build_files_with_same_data(self, mock_cas_helper):
@@ -709,10 +809,11 @@ class TestTopLevelCachedDirectoryBuilder(object):
                 input_root_digest
             )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
-            builder.build(input_root_digest, input_root_directory)
+            builder.init()
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
 
     def test_build_clear(self, mock_cas_helper):
@@ -722,9 +823,10 @@ class TestTopLevelCachedDirectoryBuilder(object):
             tempfile.TemporaryDirectory() as cache_root,
         ):
             filesystem = LocalHardlinkFilesystem(filesystem_root)
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
+            builder.init()
 
             input_root_data_1 = {
                 "file_1": b"a" * 100,
@@ -763,7 +865,9 @@ class TestTopLevelCachedDirectoryBuilder(object):
                 input_root_directory = mock_cas_helper.get_directory_by_digest(
                     input_root_digest
                 )
-                builder.build(input_root_digest, input_root_directory)
+                builder.build(
+                    input_root_digest, input_root_directory, local_root
+                )
                 _assert_directory(data, local_root)
 
     # def test_corrupt_check_during_running(self, mock_cas_helper):
@@ -971,13 +1075,142 @@ class TestTopLevelCachedDirectoryBuilder(object):
                 input_root_digest
             )
             filesystem = LocalHardlinkFilesystem(filesystem_root)
-            builder = TopLevelCachedDirectoryBuilder(
-                local_root, cache_root, mock_cas_helper, filesystem
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
             )
-            builder.build(input_root_digest, input_root_directory)
+            builder.init()
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
             # create a output directory.
             os.makedirs(os.path.join(local_root, "bazel-out"))
             # build directory again.
-            builder.build(input_root_digest, input_root_directory)
+            builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
+
+    @pytest.mark.only_in_full_test
+    def test_multithread(self, mock_cas_helper):
+        with (
+            tempfile.TemporaryDirectory() as filesystem_root,
+            tempfile.TemporaryDirectory() as local_root,
+            tempfile.TemporaryDirectory() as cache_root,
+        ):
+            mock_cas_helper.set_seconds_per_byte(0.00001)
+            input_root_data_list = [
+                {
+                    "file_1": b"a" * 100,
+                    "file_2": b"b" * 20,
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"d" * 15,
+                    },
+                },
+                {
+                    "file_2": b"b" * 20,
+                    "dir_1": {
+                        "file_1_1": b"x" * 15,
+                        "file_1_2": b"y" * 15,
+                    },
+                },
+                {
+                    "file_2": b"b" * 20,
+                    "dir_2": {
+                        "file_2_1": b"x" * 1024 * 1024,
+                        "file_2_2": b"y" * 15,
+                    },
+                },
+                {
+                    "file_2": b"b" * 20,
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"d" * 15,
+                    },
+                    "dir_2": {
+                        "file_2_1": b"x" * 1024 * 1024,
+                        "file_2_2": b"y" * 15,
+                    },
+                    "bazel-out": {
+                        "dir_1": {
+                            "file_1_1": b"abcd",
+                        },
+                    },
+                },
+                {
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"d" * 15,
+                        "dir_1_1": {
+                            "file_1_1": b"x" * 10,
+                        },
+                    },
+                    "dir_2": {
+                        "file_2_1": b"x" * 1024 * 1024,
+                        "file_2_2": b"y" * 15,
+                    },
+                    "bazel-out": {
+                        "file_1": b"abcd",
+                    },
+                    "external": {"engine": {"file_x": b"x"}},
+                },
+            ]
+            for i in range(10):
+                input_root_data_list.append(
+                    {f"dir_{i}": {"file_1": b"d" * (i % 10 + 1)}}
+                )
+            for i in range(10):
+                input_root_data_list.append(
+                    {
+                        "bazel-out": {f"file_{i}": b"d" * 10},
+                        f"dir_{i}": {"file_1": b"d" * (i % 10 + 1)},
+                    }
+                )
+            for i in range(20):
+                dir_data = {}
+                for j in range(5):
+                    dir_data[f"dir_{i}_{j}"] = {
+                        f"file_{i}_{j}_x": b"xxx" * (i + j)
+                    }
+                input_root_data_list.append(dir_data)
+            input_root_digest_list = [
+                mock_cas_helper.append_directory(d)
+                for d in input_root_data_list
+            ]
+            input_root_directory_list = [
+                mock_cas_helper.get_directory_by_digest(d)
+                for d in input_root_digest_list
+            ]
+            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            skip_cache = ["bazel-out", "external", "engine"]
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root,
+                mock_cas_helper,
+                filesystem,
+                skip_cache=skip_cache,
+            )
+            builder.init()
+
+            def _thread_run():
+                thread_root = os.path.join(local_root, str(uuid.uuid4()))
+                index_list = list(range(len(input_root_data_list)))
+                random.shuffle(index_list)
+                for i in index_list:
+                    builder.build(
+                        input_root_digest_list[i],
+                        input_root_directory_list[i],
+                        thread_root,
+                    )
+                    _assert_directory(
+                        input_root_data_list[i],
+                        thread_root,
+                        skip_cache=skip_cache,
+                    )
+
+            futures = []
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=10
+            ) as executor:
+                for i in range(20):
+                    futures.append(executor.submit(_thread_run))
+            for f in futures:
+                f.result()
+
+    # def test_same_directory_with_skip_cache_name

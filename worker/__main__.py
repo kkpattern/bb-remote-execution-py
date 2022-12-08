@@ -2,7 +2,13 @@ import signal
 import sys
 
 import grpc
+from google.bytestream.bytestream_pb2_grpc import ByteStreamStub
+from build.bazel.remote.execution.v2.remote_execution_pb2_grpc import (
+    ContentAddressableStorageStub,
+)
 
+from .cas import CASHelper
+from .directorybuilder import SharedTopLevelCachedDirectoryBuilder
 from .filesystem import LocalHardlinkFilesystem
 from .thread import WorkerThreadMain
 
@@ -39,10 +45,24 @@ def main():
         signal.signal(signal.SIGTERM, lambda s, f: graceful_shutdown())
         if sys.platform == "win32":
             signal.signal(signal.SIGBREAK, lambda s, f: graceful_shutdown())
-        filesystem = LocalHardlinkFilesystem("tmp/cache")
+
+        filesystem = LocalHardlinkFilesystem("tmp/file_cache")
         filesystem.init()
+
+        cas_stub = ContentAddressableStorageStub(cas_channel)
+        cas_byte_stream_stub = ByteStreamStub(cas_channel)
+        cas_helper = CASHelper(cas_stub, cas_byte_stream_stub)
+
+        directory_builder = SharedTopLevelCachedDirectoryBuilder(
+            "tmp/dir_cache",
+            cas_helper,
+            filesystem,
+        )
+        directory_builder.init()
         for i in range(10):
-            thread_main = WorkerThreadMain(channel, cas_channel, filesystem, i)
+            thread_main = WorkerThreadMain(
+                channel, cas_channel, filesystem, directory_builder, i
+            )
             thread_main.start()
             worker_threads.append(thread_main)
         # On Windows platform, join will total block main thread. We need

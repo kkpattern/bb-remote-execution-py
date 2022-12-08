@@ -37,3 +37,7 @@ class ThreadWorkerState(typing.Generic[T]):
         with self._lock:
             self._state = new_state
             self._event.set()
+
+    def has_state(self) -> bool:
+        with self._lock:
+            return self._event.is_set()
