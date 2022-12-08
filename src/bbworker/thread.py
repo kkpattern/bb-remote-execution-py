@@ -18,6 +18,7 @@ from build.bazel.remote.execution.v2.remote_execution_pb2_grpc import (
 )
 
 from .cas import CASHelper
+from .config import Platform
 from .runner import RunnerThread
 from .directorybuilder import IDirectoryBuilder
 
@@ -27,8 +28,11 @@ class WorkerThreadMain(threading.Thread):
         self,
         operation_queue_channel,
         cas_channel,
+        platform: Platform,
+        worker_id: typing.Dict[str, str],
         filesystem,
         directory_builder: IDirectoryBuilder,
+        build_root: str,
         worker_iid: int,
     ):
         super().__init__()
@@ -36,7 +40,9 @@ class WorkerThreadMain(threading.Thread):
         self._cas_channel = cas_channel
         self._current_state_queue: "queue.Queue[CurrentState]" = queue.Queue()
         self._desired_state_queue: "queue.Queue[DesiredState]" = queue.Queue()
-        self._worker_id = {"id": "test-win", "thread": str(worker_iid)}
+        self._worker_id = {}
+        self._worker_id.update(worker_id)
+        self._worker_id["thread"] = str(worker_iid)
 
         self._operation_queue_stub = OperationQueueStub(
             self._operation_queue_channel
@@ -50,10 +56,11 @@ class WorkerThreadMain(threading.Thread):
             cas_helper,
             action_cache_stub,
             directory_builder,
-            "tmp/{0}".format(worker_iid),
+            f"{build_root}/{worker_iid}",
             self._current_state_queue,
             self._desired_state_queue,
         )
+        self._platform = platform.dict()
         self._sync_future: typing.Optional[grpc.Future] = None
         self._shutdown_notified = threading.Event()
 
@@ -88,7 +95,7 @@ class WorkerThreadMain(threading.Thread):
         synchronize_request = SynchronizeRequest(
             worker_id=self._worker_id,
             instance_name_prefix="",
-            platform={"properties": [{"name": "os", "value": "windows"}]},
+            platform=self._platform,
             current_state=current_state,
         )
         return self._operation_queue_stub.Synchronize(synchronize_request)
@@ -97,7 +104,7 @@ class WorkerThreadMain(threading.Thread):
         synchronize_request = SynchronizeRequest(
             worker_id=self._worker_id,
             instance_name_prefix="",
-            platform={"properties": [{"name": "os", "value": "windows"}]},
+            platform=self._platform,
             current_state=current_state,
         )
         return self._operation_queue_stub.Synchronize.future(
