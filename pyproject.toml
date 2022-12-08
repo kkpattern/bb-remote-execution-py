@@ -1,5 +1,5 @@
 [project]
-name = "py-bb-worker"
+name = "bbworker"
 version = "0.0.1"
 dependencies = [
   'grpcio>=1.50.0,<2.0.0',
@@ -17,8 +17,8 @@ dev = [
   'black>=22.10.0,<23.0.0',
 ]
 
-[tool.setuptools]
-packages = []
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.black]
 line-length = 79

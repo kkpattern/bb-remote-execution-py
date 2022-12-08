@@ -8,8 +8,8 @@ import uuid
 
 import pytest
 
-from worker.filesystem import LocalHardlinkFilesystem
-from worker.util import set_read_only
+from bbworker.filesystem import LocalHardlinkFilesystem
+from bbworker.util import set_read_only
 
 
 class TestLocalHardlinkFilesystem(object):
