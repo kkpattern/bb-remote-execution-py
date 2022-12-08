@@ -1,4 +1,45 @@
+import hashlib
+
+from bbworker.cas import BytesProvider
 from bbworker.cas import CASCache
+
+
+class TestBytesProvider:
+    def test_read(self):
+        provider = BytesProvider(b"abcd")
+        expect = [b"a", b"b", b"c", b"d"]
+        for data in provider.read(1):
+            assert data == expect.pop(0)
+        assert not expect
+
+        provider = BytesProvider(b"abcdefg")
+        expect = [b"ab", b"cd", b"ef", b"g"]
+        for data in provider.read(2):
+            assert data == expect.pop(0)
+        assert not expect
+
+        provider = BytesProvider(b"abcdefgh")
+        expect = [b"abcd", b"efgh"]
+        for data in provider.read(4):
+            assert data == expect.pop(0)
+        assert not expect
+
+    def test_read_all(self):
+        raw_data = b"abcdefgh"
+        provider = BytesProvider(raw_data)
+        assert provider.read_all() == raw_data
+
+    def test_size_bytes(self):
+        provider = BytesProvider(b"a")
+        assert provider.size_bytes == 1
+
+        provider = BytesProvider(b"abcdefg")
+        assert provider.size_bytes == 7
+
+    def test_hash(self):
+        raw_data = b"abcedefg"
+        provider = BytesProvider(raw_data)
+        assert provider.hash_ == hashlib.sha256(raw_data).hexdigest()
 
 
 def test_cas_cache(mock_cas_helper):
