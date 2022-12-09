@@ -260,14 +260,14 @@ class CASHelper(object):
                     # TODO:
                     print(each.status.message)
 
-    def _write_bytes_to_steam(self, provider):
+    def _write_bytes_to_steam(self, provider: IProvider):
         self._byte_steam_stub.Write(self._write_requests(provider))
 
-    def _write_requests(self, provider):
-        digest = provider.digest
+    def _write_requests(self, provider: IProvider):
+        hash_ = provider.hash_
         total_size_bytes = provider.size_bytes
         resource_name = "uploads/{uuid_}/blobs/{hash_}/{size}".format(
-            uuid_=uuid.uuid4(), hash_=digest, size=total_size_bytes
+            uuid_=uuid.uuid4(), hash_=hash_, size=total_size_bytes
         )
         offset = 0
         for data in provider.read(segment_size=self._msg_size_bytes_limit):
