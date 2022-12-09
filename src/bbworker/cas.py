@@ -238,6 +238,7 @@ class CASHelper(object):
                 batch.append_provider(provider)
             else:
                 batch = UpdateBatch()
+                batch.append_provider(provider)
                 batch_list.append(batch)
         for batch in batch_list:
             requests: typing.List[BatchUpdateBlobsRequest.Request] = []
