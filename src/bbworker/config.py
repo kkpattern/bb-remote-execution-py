@@ -11,6 +11,9 @@ class BuildbarnConfig(BaseModel):
 
 class FileSystemConfig(BaseModel):
     cache_root: str
+    max_cache_size_bytes: int = 0
+    concurrency: int = 10
+    download_batch_size_bytes: int = 3 * 1024 * 1024
 
 
 class BuildDirectoryBuilderConfig(BaseModel):

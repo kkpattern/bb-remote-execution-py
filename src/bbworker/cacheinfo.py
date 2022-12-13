@@ -11,8 +11,7 @@ if sys.platform == "win32":
         """Some hand selected attributes for testing if a file is changed."""
 
         def __init__(self, file_stat: os.stat_result):
-            # TODO: st_mode will change on windows?
-            # self.st_mode = file_stat.st_mode
+            self.st_atime = file_stat.st_atime
             self.st_mtime = file_stat.st_mtime
             self.st_ctime = file_stat.st_ctime
             self.st_uid = file_stat.st_uid
@@ -21,6 +20,7 @@ if sys.platform == "win32":
 
         def match(self, file_stat):
             return (
+                # TODO: bring back st_mode?
                 self.st_mtime == file_stat.st_mtime
                 and self.st_ctime == file_stat.st_ctime
                 and self.st_uid == file_stat.st_uid
@@ -34,6 +34,7 @@ else:
         """Some hand selected attributes for testing if a file is changed."""
 
         def __init__(self, file_stat: os.stat_result):
+            self.st_atime = file_stat.st_atime
             self.st_mode = file_stat.st_mode
             self.st_mtime = file_stat.st_mtime
             self.st_uid = file_stat.st_uid
