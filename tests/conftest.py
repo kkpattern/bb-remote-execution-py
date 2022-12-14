@@ -58,7 +58,7 @@ class MockCASHelper(object):
         d.ParseFromString(data)
         return d
 
-    def fetch_all(self, digests: typing.Iterable[Digest]):
+    def fetch_all_block(self, digests: typing.Iterable[Digest]):
         self._call_history.append(digests)
         if self._seconds_per_byte > 0:
             total_size = sum([d.size_bytes for d in digests])
