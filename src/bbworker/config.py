@@ -18,6 +18,7 @@ class FileSystemConfig(BaseModel):
 
 class BuildDirectoryBuilderConfig(BaseModel):
     cache_root: str
+    concurrency: int = 10
 
 
 class Property(BaseModel):
