@@ -380,7 +380,7 @@ class LocalHardlinkFilesystem(object):
         file_opened: typing.Dict[str, io.BufferedWriter] = {}
         file_sha256: typing.Dict[str, hashlib._Hash] = {}
         try:
-            for digest, offset, data in backend.fetch_all(batch.digests):
+            for digest, offset, data in backend.fetch_all_block(batch.digests):
                 name_in_cache = digest_to_cache_name(digest)
                 # We need to download into a temp path. Only the file is
                 # downloaded and verify then we can move it to cache root.
