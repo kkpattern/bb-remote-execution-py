@@ -272,10 +272,6 @@ class LocalHardlinkFilesystem(object):
         # merge the files that have the same content.
         merged_files: typing.Dict[str, DigestAndFileNodes] = {}
         for fn in files:
-            if fn.digest.size_bytes <= 0:
-                raise InvalidDigest(
-                    f"digest has invalide size bytes {fn.digest.size_bytes}"
-                )
             name_in_cache = digest_to_cache_name(fn.digest)
             if name_in_cache in merged_files:
                 merged_files[name_in_cache].append_file_node(fn)
@@ -345,7 +341,7 @@ class LocalHardlinkFilesystem(object):
                 if os.path.exists(path_in_cache):
                     unlink_readonly_file(path_in_cache)
         for batch in batch_list:
-            if batch.total_size_bytes > 0:
+            if batch.digests:
                 self._executor.submit(self._download_thread, backend, batch)
         return download_events
 
