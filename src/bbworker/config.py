@@ -78,6 +78,11 @@ class Sentry(BaseModel):
     traces_sample_rate: float = 0.1
 
 
+class OpenTelemetry(BaseModel):
+    http_host: str
+    http_port: int
+
+
 class Config(BaseSettings):
     buildbarn: BuildbarnConfig
     platform: Platform
@@ -87,3 +92,4 @@ class Config(BaseSettings):
     build_root: str
     concurrency: int = 1
     sentry: Sentry | None
+    open_telemetry: OpenTelemetry | None

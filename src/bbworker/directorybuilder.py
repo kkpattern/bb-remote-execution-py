@@ -20,6 +20,7 @@ from build.bazel.remote.execution.v2.remote_execution_pb2 import FileNode
 from .cas import CASHelper
 from .filesystem import LocalHardlinkFilesystem
 from .lock import VariableRLock
+from .metrics import MeterBase
 from .util import unlink_file
 from .util import unlink_readonly_file
 from .util import rmtree
@@ -215,6 +216,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
         cache_root: str,
         cas_helper: CASHelper,
         filesystem: LocalHardlinkFilesystem,
+        meter: MeterBase,
         *,
         skip_cache: typing.Optional[typing.Iterable[str]] = None,
         max_cache_size_bytes: int = 0,
@@ -255,6 +257,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             self._file_count = None
         else:
             self._file_count = {}
+        self._meter = meter
 
     @property
     def cache_dir_root(self):
@@ -412,7 +415,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
 
         # TODO: do in thread.
         for name in dir_need_to_evict:
-            print("evict dir:", name)
+            self._meter.count("evict_cached_directory")
             self._remove_cached_dir(name)
 
         for f in concurrent.futures.as_completed(build_native_futures):

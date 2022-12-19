@@ -19,6 +19,7 @@ from build.bazel.remote.execution.v2.remote_execution_pb2_grpc import (
 
 from .cas import CASHelper
 from .config import Platform
+from .metrics import MeterBase
 from .runner import RunnerThread
 from .directorybuilder import IDirectoryBuilder
 
@@ -34,6 +35,7 @@ class WorkerThreadMain(threading.Thread):
         directory_builder: IDirectoryBuilder,
         build_root: str,
         worker_iid: int,
+        meter: MeterBase,
     ):
         super().__init__()
         self._operation_queue_channel = operation_queue_channel
@@ -59,6 +61,7 @@ class WorkerThreadMain(threading.Thread):
             f"{build_root}/{worker_iid}",
             self._current_state_queue,
             self._desired_state_queue,
+            meter,
         )
         self._platform = platform.dict()
         self._sync_future: typing.Optional[grpc.Future] = None
