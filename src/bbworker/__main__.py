@@ -28,6 +28,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+
     with open(args.config_file, "r") as f:
         data = yaml.load(f.read(), Loader=yaml.Loader)
     try:
@@ -35,6 +36,15 @@ def main():
     except pydantic.error_wrappers.ValidationError as e:
         sys.stderr.write(f"{e}\n")
         sys.exit(1)
+
+    if config.sentry:
+        import sentry_sdk
+
+        sentry_sdk.init(
+            config.sentry.address,
+            traces_sample_rate=config.sentry.traces_sample_rate,
+        )
+
     with (
         grpc.insecure_channel(
             config.buildbarn.scheduler_address,
