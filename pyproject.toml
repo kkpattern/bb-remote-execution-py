@@ -21,6 +21,10 @@ dev = [
 sentry = [
   'sentry-sdk>=1.12.0,<2.0.0',
 ]
+otel = [
+  'opentelemetry-sdk>=1.15.0,<2.0.0',
+  'opentelemetry-exporter-prometheus',
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
