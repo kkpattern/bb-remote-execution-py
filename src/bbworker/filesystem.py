@@ -20,6 +20,9 @@ from .util import link_file
 from .util import unlink_readonly_file
 
 
+DownloadFuture = concurrent.futures.Future[None]
+
+
 def digest_to_cache_name(digest: Digest):
     """Convert digest to "{hash}_{size}"."""
     return "{0}_{1}".format(digest.hash, digest.size_bytes)
@@ -58,7 +61,7 @@ class DownloadBatch(object):
     ) -> None:
         self._digest_and_file_nodes: typing.List[DigestAndFileNodes] = []
         self._total_size_bytes = 0
-        self._finish_event = threading.Event()
+        self._future: DownloadFuture = concurrent.futures.Future()
         if batch:
             for d in batch:
                 self._digest_and_file_nodes.append(d)
@@ -69,8 +72,8 @@ class DownloadBatch(object):
             yield digest_and_file_nodes
 
     @property
-    def finish_event(self):
-        return self._finish_event
+    def future(self):
+        return self._future
 
     @property
     def digests(self):
@@ -106,7 +109,7 @@ class LocalHardlinkFilesystem(object):
         self._cached_files: typing.Dict[
             str, FileCacheInfo
         ] = collections.OrderedDict()
-        self._pending_files: typing.Dict[str, threading.Event] = {}
+        self._pending_files: typing.Dict[str, DownloadFuture] = {}
         self._global_lock = threading.Lock()
         self._executor = concurrent.futures.ThreadPoolExecutor(
             concurrency, thread_name_prefix="filesystem_"
@@ -246,6 +249,8 @@ class LocalHardlinkFilesystem(object):
                     else:
                         corrupted_files.append(fnode)
                 else:
+                    if name_in_cache in cached_files:
+                        corrupted_files.append(fnode)
                     missing_files.append(fnode)
         with self._global_lock:
             for fn in corrupted_files:
@@ -253,7 +258,8 @@ class LocalHardlinkFilesystem(object):
                 path_in_cache = os.path.join(
                     self._cache_root_dir, name_in_cache
                 )
-                unlink_readonly_file(path_in_cache)
+                if os.path.exists(path_in_cache):
+                    unlink_readonly_file(path_in_cache)
                 del self._cached_files[name_in_cache]
                 self._current_size_bytes -= fn.digest.size_bytes
                 missing_files.append(fn)
@@ -261,14 +267,11 @@ class LocalHardlinkFilesystem(object):
 
     def _download_missing_files(
         self, backend, files: typing.Iterable[FileNode]
-    ) -> typing.Iterable[threading.Event]:
+    ) -> typing.Iterable[DownloadFuture]:
         batch_size = self._download_batch_size_bytes
         size_limited = self._max_cache_size_bytes > 0
         max_cache_size_bytes = self._max_cache_size_bytes
-        available_cache_size_bytes = (
-            self._max_cache_size_bytes - self._current_size_bytes
-        )
-        download_events: typing.Set[threading.Event] = set()
+        download_futures: typing.Set[concurrent.futures.Future] = set()
         # merge the files that have the same content.
         merged_files: typing.Dict[str, DigestAndFileNodes] = {}
         for fn in files:
@@ -283,13 +286,18 @@ class LocalHardlinkFilesystem(object):
             # calculate which files we need to download. which files we need
             # to remove to make space.
             required_size = 0
+            available_cache_size_bytes = (
+                self._max_cache_size_bytes - self._current_size_bytes
+            )
             missing_files: typing.List[DigestAndFileNodes] = []
             names_need_to_evict: typing.List[str] = []
+            cached_names: typing.List[str] = []
             for name_in_cache, digest_and_file_nodes in merged_files.items():
                 if name_in_cache in self._cached_files:
+                    cached_names.append(name_in_cache)
                     continue
                 elif name_in_cache in self._pending_files:
-                    download_events.add(self._pending_files[name_in_cache])
+                    download_futures.add(self._pending_files[name_in_cache])
                     continue
                 else:
                     missing_files.append(digest_and_file_nodes)
@@ -306,6 +314,8 @@ class LocalHardlinkFilesystem(object):
                         break
                 if required_size > available_cache_size_bytes:
                     raise MaxSizeReached
+            for name in cached_names:
+                self._cached_files[name] = self._cached_files.pop(name)
             for name in names_need_to_evict:
                 cache_info = self._cached_files.pop(name)
                 self._current_size_bytes -= cache_info.st_size
@@ -327,9 +337,9 @@ class LocalHardlinkFilesystem(object):
                 name_in_cache = digest_to_cache_name(
                     digest_and_file_nodes.digest
                 )
-                finish_event = batch_for_digest.finish_event
-                self._pending_files[name_in_cache] = finish_event
-                download_events.add(finish_event)
+                future = batch_for_digest.future
+                self._pending_files[name_in_cache] = future
+                download_futures.add(future)
                 self._current_size_bytes += (
                     digest_and_file_nodes.digest.size_bytes
                 )
@@ -343,12 +353,25 @@ class LocalHardlinkFilesystem(object):
         for batch in batch_list:
             if batch.digests:
                 self._executor.submit(self._download_thread, backend, batch)
-        return download_events
+        return download_futures
 
     def _download_thread(self, backend, batch: DownloadBatch):
         try:
             self._download_thread_inner(backend, batch)
-        finally:
+        except Exception as e:
+            with self._global_lock:
+                for digest_and_file_nodes in batch:
+                    digest = digest_and_file_nodes.digest
+                    name_in_cache = digest_to_cache_name(digest)
+                    path_in_cache = os.path.join(
+                        self._cache_root_dir, name_in_cache
+                    )
+                    if os.path.exists(path_in_cache):
+                        unlink_readonly_file(path_in_cache)
+                    self._current_size_bytes -= digest.size_bytes
+                    del self._pending_files[name_in_cache]
+            batch.future.set_exception(e)
+        else:
             try:
                 with self._global_lock:
                     for digest_and_file_nodes in batch:
@@ -369,8 +392,9 @@ class LocalHardlinkFilesystem(object):
                             # download failed. return the reserved size bytes.
                             self._current_size_bytes -= digest.size_bytes
                         del self._pending_files[name_in_cache]
-            finally:
-                batch.finish_event.set()
+                batch.future.set_result(None)
+            except Exception as e:
+                batch.future.set_exception(e)
 
     def _download_thread_inner(self, backend, batch: DownloadBatch):
         file_opened: typing.Dict[str, io.BufferedWriter] = {}
@@ -442,10 +466,13 @@ class LocalHardlinkFilesystem(object):
         copy_file: bool = False,
     ):
         """Fetch files into the target directory."""
+        # TODO: add generator test.
+        # convert to list. we will iterate multiple times.
+        files = list(files)
         while files:
-            download_events = self._download_missing_files(backend, files)
-            for e in download_events:
-                e.wait()
+            download_futures = self._download_missing_files(backend, files)
+            for f in concurrent.futures.as_completed(download_futures):
+                f.result()
             files = self._link_existing_files(
                 files, target_dir, copy_file=copy_file
             )

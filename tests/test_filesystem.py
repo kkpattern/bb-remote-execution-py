@@ -13,6 +13,11 @@ import pytest
 from bbworker.filesystem import LocalHardlinkFilesystem
 from bbworker.filesystem import MaxSizeReached
 from bbworker.util import set_read_only
+from bbworker.util import unlink_readonly_file
+
+
+class FakeIOError(Exception):
+    pass
 
 
 class TestLocalHardlinkFilesystem(object):
@@ -394,30 +399,37 @@ class TestLocalHardlinkFilesystem(object):
                 ("file_1", b"x" * 100),
                 ("file_2", b"y" * 100),
                 ("file_3", b"z" * 100),
+                ("file_4", b"a" * 100),
+                ("file_5", b"b" * 100),
             ]:
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
             filesystem = LocalHardlinkFilesystem(
                 filesystem_root,
-                max_cache_size_bytes=200,
+                max_cache_size_bytes=300,
             )
             filesystem.init()
-            for i in [1, 0, 2]:
+            for i in [0, 1, 2]:
+                filesystem.fetch_to(
+                    mock_cas_helper,
+                    [test_file_list[i][0]],
+                    target_root,
+                )
+            for i in [0, 3, 4]:
                 filesystem.fetch_to(
                     mock_cas_helper,
                     [test_file_list[i][0]],
                     target_root,
                 )
             # all files exist in target dir.
-            for i in [0, 1, 2]:
+            for i in [0, 1, 2, 3, 4]:
                 fnode, data = test_file_list[i]
                 p = os.path.join(target_root, fnode.name)
                 assert os.path.isfile(p)
                 with open(p, "rb") as f:
                     assert f.read() == data
-            # only file 0 and 2 should exist in cache dir.
-            for i in [0, 2]:
+            for i in [0, 3, 4]:
                 fnode, data = test_file_list[i]
                 digest = fnode.digest
                 path_in_cache = os.path.join(
@@ -426,8 +438,7 @@ class TestLocalHardlinkFilesystem(object):
                 assert os.path.isfile(path_in_cache)
                 with open(path_in_cache, "rb") as f:
                     assert f.read() == data
-            # file 1 should not exist in cache dir.
-            for i in [1]:
+            for i in [1, 2]:
                 fnode, data = test_file_list[i]
                 digest = fnode.digest
                 path_in_cache = os.path.join(
@@ -709,3 +720,99 @@ class TestLocalHardlinkFilesystem(object):
                         os.path.join(filesystem_root, f)
                     ).st_size
                 assert total_size == filesystem.current_size_bytes
+
+    def test_current_size_bytes_after_error(self, mock_cas_helper):
+        with (
+            tempfile.TemporaryDirectory() as filesystem_root,
+            tempfile.TemporaryDirectory() as target_root,
+        ):
+            test_file_list = []
+            error_data = b"x" * 1
+            for name, data in [
+                ("file_1", b"a" * 10),
+                ("file_2", b"b" * 25),
+                ("file_3", b"c" * 30),
+                ("file_4", b"d" * 45),
+                ("file_5", b"e" * 20),
+                ("file_6", b"f" * 20),
+                ("file_7", b"g" * 2),
+                ("file_8", b"h" * 30),
+                # intentionally download twich.
+                ("file_1", b"a" * 10),
+                ("file_2", b"b" * 25),
+                ("file_3", b"c" * 30),
+                ("file_4", b"d" * 45),
+                ("file_5", error_data),
+                ("file_6", b"f" * 20),
+                ("file_7", b"g" * 2),
+                ("file_8", b"h" * 30),
+            ]:
+                test_file_list.append(
+                    (mock_cas_helper.append_file(name, data), data)
+                )
+            mock_cas_helper.set_data_exception(error_data, FakeIOError())
+            filesystem = LocalHardlinkFilesystem(
+                filesystem_root,
+                max_cache_size_bytes=45,
+            )
+            filesystem.init()
+
+            for i in test_file_list:
+                try:
+                    filesystem.fetch_to(
+                        mock_cas_helper,
+                        [i[0]],
+                        target_root,
+                    )
+                except FakeIOError:
+                    pass
+                total_size = 0
+                for f in os.listdir(filesystem_root):
+                    total_size += os.stat(
+                        os.path.join(filesystem_root, f)
+                    ).st_size
+                assert total_size == filesystem.current_size_bytes
+
+    def test_file_missing(self, mock_cas_helper):
+        with (
+            tempfile.TemporaryDirectory() as filesystem_root,
+            tempfile.TemporaryDirectory() as target_root,
+        ):
+            test_file_list = []
+            for name, data in [
+                ("file_1", b"x" * 100),
+                ("file_2", b"y" * 200),
+            ]:
+                test_file_list.append(
+                    (mock_cas_helper.append_file(name, data), data)
+                )
+            filesystem = LocalHardlinkFilesystem(
+                filesystem_root, max_cache_size_bytes=300
+            )
+            filesystem.init()
+            filesystem.fetch_to(
+                mock_cas_helper, [i[0] for i in test_file_list], target_root
+            )
+            for fnode, data in test_file_list:
+                digest = fnode.digest
+                path_in_cache = os.path.join(
+                    filesystem_root, f"{digest.hash}_{digest.size_bytes}"
+                )
+                assert os.path.isfile(path_in_cache)
+                with open(path_in_cache, "rb") as f:
+                    assert f.read() == data
+            for f in os.listdir(filesystem_root):
+                unlink_readonly_file(os.path.join(filesystem_root, f))
+            filesystem.fetch_to(
+                mock_cas_helper, [i[0] for i in test_file_list], target_root
+            )
+            for fnode, data in test_file_list:
+                digest = fnode.digest
+                path_in_cache = os.path.join(
+                    filesystem_root, f"{digest.hash}_{digest.size_bytes}"
+                )
+                assert os.path.isfile(path_in_cache)
+                with open(path_in_cache, "rb") as f:
+                    assert f.read() == data
+
+    # TODO: disk IO error.

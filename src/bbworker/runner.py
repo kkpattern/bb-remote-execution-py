@@ -7,6 +7,9 @@ import threading
 import typing
 
 import grpc
+from google.protobuf.any_pb2 import Any
+from google.rpc.error_details_pb2 import PreconditionFailure
+from google.rpc.status_pb2 import Status
 from build.bazel.remote.execution.v2.remote_execution_pb2 import ActionResult
 from build.bazel.remote.execution.v2.remote_execution_pb2 import (
     BatchReadBlobsRequest,
@@ -31,6 +34,7 @@ from .cas import IProvider
 from .cas import BytesProvider
 from .cas import CASHelper
 from .cas import FileProvider
+from .cas import BatchReadBlobsError
 
 from .directorybuilder import IDirectoryBuilder
 from .util import setup_xcode_env
@@ -87,7 +91,7 @@ def execute_command(
     command: Command,
     input_root_digest: Digest,
     input_root: Directory,
-) -> ActionResult:
+):
     state_queue.put(
         CurrentState(
             executing={
@@ -96,117 +100,141 @@ def execute_command(
             }
         )
     )
-    build_directory_builder.build(
-        input_root_digest, input_root, build_directory
-    )
-    prepare_output_dirs(command, build_directory)
-    if command.working_directory:
-        working_directory = os.path.join(
-            build_directory, command.working_directory
+    try:
+        build_directory_builder.build(
+            input_root_digest, input_root, build_directory
         )
+    except BatchReadBlobsError as e:
+        status = Status(code=grpc.StatusCode.FAILED_PRECONDITION.value[0])
+        if e.digests:
+            violations = []
+            for each in e.digests:
+                violations.append(
+                    {
+                        "type": "MISSING",
+                        "subject": f"blobs/{each.hash}/{each.size_bytes}",
+                    }
+                )
+            detail_any = Any()
+            detail_any.Pack(PreconditionFailure(violations=violations))
+            status.details.append(detail_any)
+        response = ExecuteResponse(status=status)
     else:
-        working_directory = build_directory
-    env = {}
-    for each_env in command.environment_variables:
-        env[each_env.name] = each_env.value
-
-    if sys.platform == "darwin":
-        setup_xcode_env(env)
-    elif sys.platform == "win32":
-        env["SystemRoot"] = "c:\\Windows"
-
-    state_queue.put(
-        CurrentState(
-            executing={
-                "action_digest": action_digest,
-                "running": {},
-            }
-        )
-    )
-    result = subprocess.run(
-        command.arguments,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=working_directory,
-    )
-
-    update_provider_list: typing.List[IProvider] = []
-
-    stdout_digest = None
-    stderr_digest = None
-    if result.stdout:
-        stdout_provider = BytesProvider(result.stdout)
-        stdout_digest = Digest(
-            hash=stdout_provider.hash_,
-            size_bytes=stdout_provider.size_bytes,
-        )
-        update_provider_list.append(stdout_provider)
-
-    if result.stderr:
-        stderr_provider = BytesProvider(result.stderr)
-        stderr_digest = Digest(
-            hash=stderr_provider.hash_,
-            size_bytes=stderr_provider.size_bytes,
-        )
-        update_provider_list.append(stderr_provider)
-    if result.returncode == 0:
-        # Check outputs.
-        if command.output_paths:
-            output_paths: typing.Iterable[str] = command.output_paths
+        prepare_output_dirs(command, build_directory)
+        if command.working_directory:
+            working_directory = os.path.join(
+                build_directory, command.working_directory
+            )
         else:
-            output_paths = list(command.output_files)
-            output_paths.extend(command.output_directories)
-        # First check all file exists.
-        for each in output_paths:
-            local_path = os.path.join(build_directory, each)
-            if not os.path.exists(local_path):
-                # TODO:
-                raise Exception(f"{each} not generated.")
-            elif os.path.isdir(local_path):
-                raise NotImplementedError(
-                    "Output directory is not implemented yet."
-                )
-        # Then generate ActionResult.
-        output_files = []
+            working_directory = build_directory
+        env = {}
+        for each_env in command.environment_variables:
+            env[each_env.name] = each_env.value
 
-        for each in output_paths:
-            local_path = os.path.join(build_directory, each)
-            if os.path.isfile(local_path):
-                provider = FileProvider(local_path)
-                update_provider_list.append(provider)
-                # TODO: is_executable
-                output_files.append(
-                    OutputFile(
-                        path=each,
-                        digest={
-                            "hash": provider.hash_,
-                            "size_bytes": provider.size_bytes,
-                        },
-                    )
-                )
-            # TODO: Directory.
-    else:
-        output_files = []
+        if sys.platform == "darwin":
+            setup_xcode_env(env)
+        elif sys.platform == "win32":
+            env["SystemRoot"] = "c:\\Windows"
 
-    cas_helper.update_all(update_provider_list)
-
-    state_queue.put(
-        CurrentState(
-            executing={
-                "action_digest": action_digest,
-                "uploading_outputs": {},
-            }
+        state_queue.put(
+            CurrentState(
+                executing={
+                    "action_digest": action_digest,
+                    "running": {},
+                }
+            )
         )
-    )
-    # Upload action result.
-    action_result = ActionResult(
-        output_files=output_files,
-        exit_code=result.returncode,
-        stdout_digest=stdout_digest,
-        stderr_digest=stderr_digest,
-    )
-    return action_result
+        result = subprocess.run(
+            command.arguments,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=working_directory,
+        )
+
+        update_provider_list: typing.List[IProvider] = []
+
+        stdout_digest = None
+        stderr_digest = None
+        if result.stdout:
+            stdout_provider = BytesProvider(result.stdout)
+            stdout_digest = Digest(
+                hash=stdout_provider.hash_,
+                size_bytes=stdout_provider.size_bytes,
+            )
+            update_provider_list.append(stdout_provider)
+
+        if result.stderr:
+            stderr_provider = BytesProvider(result.stderr)
+            stderr_digest = Digest(
+                hash=stderr_provider.hash_,
+                size_bytes=stderr_provider.size_bytes,
+            )
+            update_provider_list.append(stderr_provider)
+        if result.returncode == 0:
+            # Check outputs.
+            if command.output_paths:
+                output_paths: typing.Iterable[str] = command.output_paths
+            else:
+                output_paths = list(command.output_files)
+                output_paths.extend(command.output_directories)
+            # First check all file exists.
+            for each in output_paths:
+                local_path = os.path.join(build_directory, each)
+                if not os.path.exists(local_path):
+                    # TODO:
+                    raise Exception(f"{each} not generated.")
+                elif os.path.isdir(local_path):
+                    raise NotImplementedError(
+                        "Output directory is not implemented yet."
+                    )
+            # Then generate ActionResult.
+            output_files = []
+
+            for each in output_paths:
+                local_path = os.path.join(build_directory, each)
+                if os.path.isfile(local_path):
+                    provider = FileProvider(local_path)
+                    update_provider_list.append(provider)
+                    # TODO: is_executable
+                    output_files.append(
+                        OutputFile(
+                            path=each,
+                            digest={
+                                "hash": provider.hash_,
+                                "size_bytes": provider.size_bytes,
+                            },
+                        )
+                    )
+                # TODO: Directory.
+        else:
+            output_files = []
+
+        cas_helper.update_all(update_provider_list)
+
+        state_queue.put(
+            CurrentState(
+                executing={
+                    "action_digest": action_digest,
+                    "uploading_outputs": {},
+                }
+            )
+        )
+        # Upload action result.
+        action_result = ActionResult(
+            output_files=output_files,
+            exit_code=result.returncode,
+            stdout_digest=stdout_digest,
+            stdout_raw=result.stdout,
+            stderr_digest=stderr_digest,
+            stderr_raw=result.stderr,
+        )
+        response = ExecuteResponse(
+            result=action_result,
+            cached_result=False,
+            status={"code": grpc.StatusCode.OK.value[0]},
+        )
+    return response
 
 
 class RunnerThread(threading.Thread):
@@ -250,7 +278,7 @@ class RunnerThread(threading.Thread):
             # new state.
             if desired_state.WhichOneof("worker_state") == "executing":
                 action_digest = desired_state.executing.action_digest
-                print(f"Action {action_digest.hash} started")
+                # print(f"Action {action_digest.hash} started")
                 should_executing = desired_state.executing
                 self._current_state_queue.put(
                     CurrentState(
@@ -267,7 +295,7 @@ class RunnerThread(threading.Thread):
                     action.input_root_digest,
                 )
                 if command and input_root:
-                    action_result = execute_command(
+                    response = execute_command(
                         self._current_state_queue,
                         self._build_directory_builder,
                         self._build_directory,
@@ -277,17 +305,6 @@ class RunnerThread(threading.Thread):
                         action.input_root_digest,
                         input_root,
                     )
-                    self._action_cache_stub.UpdateActionResult(
-                        UpdateActionResultRequest(
-                            action_digest=action_digest,
-                            action_result=action_result,
-                        )
-                    )
-                    response = ExecuteResponse(
-                        result=action_result,
-                        cached_result=False,
-                        status={"code": grpc.StatusCode.OK.value[0]},
-                    )
                     self._current_state_queue.put(
                         CurrentState(
                             executing={
@@ -296,6 +313,13 @@ class RunnerThread(threading.Thread):
                             }
                         )
                     )
-                print(f"Action {action_digest.hash} finished")
+                    if response.result and response.result.exit_code == 0:
+                        self._action_cache_stub.UpdateActionResult(
+                            UpdateActionResultRequest(
+                                action_digest=action_digest,
+                                action_result=response.result,
+                            )
+                        )
+                # print(f"Action {action_digest.hash} finished")
             else:
                 self._current_state_queue.put(CurrentState(idle={}))
