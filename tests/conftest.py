@@ -12,15 +12,18 @@ from build.bazel.remote.execution.v2.remote_execution_pb2 import FileNode
 import pytest
 
 from bbworker.directorybuilder import DirectoryData
+from bbworker.directorybuilder import FileData
 
 
 DirectoryDict = typing.Dict[str, typing.Union[bytes, "DirectoryDict"]]
+DigestKey = typing.Tuple[str, int]
 
 
 class MockCASHelper(object):
     def __init__(self):
-        self._data_store: typing.Dict[typing.Tuple[str, int], bytes] = {}
-        self._exceptions: typing.Dict[typing.Tuple[str, int], Exception] = {}
+        self._data_store: typing.Dict[DigestKey, bytes] = {}
+        self._exceptions: typing.Dict[DigestKey, Exception] = {}
+        self._executable: typing.Dict[DigestKey, bool] = {}
         self._call_history = []
         self._seconds_per_byte: typing.Union[int, float] = 0
 
@@ -38,7 +41,10 @@ class MockCASHelper(object):
 
     def append_file(self, name: str, data: bytes) -> FileNode:
         digest = self.append_digest_data(data)
-        return FileNode(name=name, digest=digest)
+        is_executable = self._executable.get(
+            (digest.hash, digest.size_bytes), False
+        )
+        return FileNode(name=name, digest=digest, is_executable=is_executable)
 
     def append_directory(self, directory_data: DirectoryDict) -> Digest:
         directory = Directory()
@@ -63,12 +69,20 @@ class MockCASHelper(object):
         data = self._data_store[(digest.hash, digest.size_bytes)]
         d = Directory()
         d.ParseFromString(data)
+        files = {}
+        for fnode in d.files:
+            files[fnode.name] = FileData(
+                fnode.digest,
+                self._executable.get(
+                    (fnode.digest.hash, fnode.digest.size_bytes), False
+                ),
+            )
         subdirs = {}
         for fnode in d.directories:
             subdirs[fnode.name] = self.get_directory_data_by_digest(
                 fnode.digest
             )
-        return DirectoryData(digest, d.files, subdirs)
+        return DirectoryData(digest, files, subdirs)
 
     def fetch_all(self, digests: typing.Iterable[Digest]):
         self._call_history.append(digests)
@@ -95,6 +109,10 @@ class MockCASHelper(object):
     def set_data_exception(self, data: bytes, exception: Exception):
         digest = self._data_to_digest(data)
         self._exceptions[(digest.hash, digest.size_bytes)] = exception
+
+    def set_data_executable(self, data: bytes, executable: bool):
+        digest = self._data_to_digest(data)
+        self._executable[(digest.hash, digest.size_bytes)] = executable
 
     def clear_call_history(self):
         self._call_history = []
