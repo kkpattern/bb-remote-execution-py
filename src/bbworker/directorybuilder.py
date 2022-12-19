@@ -60,23 +60,48 @@ class IDirectoryBuilder(object):
         )
 
 
+class FileData:
+    def __init__(self, digest: Digest, is_executable: bool):
+        self._digest = digest
+        self._is_executable = is_executable
+        self._name_in_cache = f"{self._digest.hash}_{self._digest.size_bytes}"
+
+    @property
+    def name_in_cache(self):
+        return self._name_in_cache
+
+    @property
+    def digest(self):
+        return self._digest
+
+    @property
+    def is_executable(self):
+        return self._is_executable
+
+    def to_file_node(self, name: str):
+        return FileNode(
+            name=name, digest=self._digest, is_executable=self._is_executable
+        )
+
+
 class DirectoryData:
     def __init__(
         self,
         checksum_digest: Digest,
-        files: typing.Iterable[FileNode],
+        files: typing.Dict[str, FileData],
         directories: typing.Dict[str, DirectoryData],
     ):
         self._checksum_digest = checksum_digest
         self._name_in_cache = (
             f"{self._checksum_digest.hash}_{self._checksum_digest.size_bytes}"
         )
-        self._files = list(files)
+        self._files: typing.Dict[str, FileData] = {}
+        self._files.update(files)
         self._directories: typing.Dict[str, DirectoryData] = {}
         self._directories.update(directories)
         self._copy_size_bytes = 0
-        for fn in self._files:
-            self._copy_size_bytes += fn.digest.size_bytes
+        for fd in self._files.values():
+            self._copy_size_bytes += fd.digest.size_bytes
         for dir_data in self._directories.values():
             self._copy_size_bytes += dir_data.copy_size_bytes
 
@@ -92,9 +117,9 @@ class DirectoryData:
     def file_count(self):
         return len(self._files)
 
-    def files(self) -> typing.Iterator[FileNode]:
-        for fn in self._files:
-            yield fn
+    def files(self) -> typing.Iterator[typing.Tuple[str, FileData]]:
+        for name, fd in self._files.items():
+            yield name, fd
 
     def directories(self) -> typing.Iterator[typing.Tuple[str, DirectoryData]]:
         for name, data in self._directories.items():
@@ -138,10 +163,11 @@ class DirectoryDataCache:
         self, digest: Digest, directory: Directory, with_cache: bool
     ) -> DirectoryData:
         checksum_message = Directory()
+        files = {}
         for f in sorted(directory.files, key=lambda fn: fn.name):
-            checksum_message.files.append(
-                FileNode(name=f.name, digest=f.digest)
-            )
+            fd = FileData(f.digest, f.is_executable)
+            files[f.name] = fd
+            checksum_message.files.append(fd.to_file_node(f.name))
 
         subdirs: typing.Dict[str, DirectoryData] = {}
 
@@ -178,7 +204,7 @@ class DirectoryDataCache:
                 hash=hashlib.sha256(checksum_data).hexdigest(),
                 size_bytes=len(checksum_data),
             ),
-            directory.files,
+            files,
             subdirs,
         )
 
@@ -224,6 +250,11 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             self._copy_from_filesystem = True
         else:
             self._copy_from_filesystem = copy_file
+        self._file_count: typing.Dict[str, int] | None
+        if self._copy_from_filesystem:
+            self._file_count = None
+        else:
+            self._file_count = {}
 
     @property
     def cache_dir_root(self):
@@ -282,7 +313,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
         if dir_data.file_count:
             self._filesystem.fetch_to(
                 self._cas_helper,
-                dir_data.files(),
+                [fd.to_file_node(name) for name, fd in dir_data.files()],
                 directory_local,
                 copy_file=self._copy_from_filesystem,
             )
@@ -320,6 +351,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             required_size_bytes = 0
             cached_names: typing.List[str] = []
             dirs_to_download: typing.Dict[str, DirectoryData] = {}
+            file_count = self._file_count
             for name, subdir in cached_dir_to_build.items():
                 name_in_cache = subdir.name_in_cache
                 dir_local_path = os.path.join(directory_local, name)
@@ -332,9 +364,10 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                     f = self._pending_cached_dir[name_in_cache]
                     build_native_futures.append(f)
                 else:
-                    required_size_bytes += self._calculate_required_size(
-                        subdir
+                    size_bytes, file_count = self._calculate_required_size(
+                        subdir, file_count
                     )
+                    required_size_bytes += size_bytes
                     dirs_to_download[name] = subdir
                 delayed_link[name_in_cache].append(dir_local_path)
             available_size_bytes = (
@@ -343,24 +376,24 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                 - required_size_bytes
             )
             if self._max_cache_size_bytes > 0 > available_size_bytes:
+                released_size = 0
                 for name_in_cache in self._cached_dir:
                     dir_need_to_evict.append(name_in_cache)
-                    dir_data = self._cached_dir[name_in_cache]
-                    available_size_bytes += self._calculate_released_size(
-                        self._cached_dir[name_in_cache]
+                    size_bytes, file_count = self._calculate_released_size(
+                        self._cached_dir[name_in_cache], file_count
                     )
-                    if available_size_bytes >= 0:
+                    released_size += size_bytes
+                    if available_size_bytes + released_size >= 0:
                         break
-                if available_size_bytes < 0:
+                if available_size_bytes + released_size < 0:
                     raise MaxSizeReached
-            for name in dir_need_to_evict:
-                dir_data = self._cached_dir.pop(name)
-                self._current_size_bytes -= self._calculate_required_size(
-                    dir_data
-                )
+                self._current_size_bytes -= released_size
+                for name in dir_need_to_evict:
+                    del self._cached_dir[name]
             for name in cached_names:
                 self._cached_dir[name] = self._cached_dir.pop(name)
             self._current_size_bytes += required_size_bytes
+            self._file_count = file_count
             for name, subdirectory in dirs_to_download.items():
                 f = self._build_cached_directory_in_thread(
                     subdirectory, self._copy_from_filesystem
@@ -438,9 +471,11 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                         self._cached_dir[name_in_cache] = directory
                 except Exception as e:
                     with self._download_lock:
-                        self._current_size_bytes -= (
-                            self._calculate_released_size(directory)
+                        size_bytes, file_count = self._calculate_released_size(
+                            directory, self._file_count
                         )
+                        self._current_size_bytes -= size_bytes
+                        self._file_count = file_count
                     future.set_exception(e)
                 else:
                     future.set_result(checksum)
@@ -488,7 +523,10 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             os.makedirs(directory_local)
         # files.
         if directory.file_count:
-            sorted_files = sorted(directory.files(), key=lambda fn: fn.name)
+            sorted_files = sorted(
+                [fd.to_file_node(n) for n, fd in directory.files()],
+                key=lambda fn: fn.name,
+            )
             self._filesystem.fetch_to(
                 self._cas_helper,
                 sorted_files,
@@ -496,14 +534,12 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                 copy_file=copy_file,
             )
             for fnode in sorted_files:
-                dir_message.files.append(
-                    FileNode(name=fnode.name, digest=fnode.digest)
-                )
+                dir_message.files.append(fnode)
             # TODO: better exception and set_exception.
-            for f in directory.files():
-                p = os.path.join(directory_local, f.name)
+            for n, fd in directory.files():
+                p = os.path.join(directory_local, n)
                 if not os.path.exists(p):
-                    raise RuntimeError(f"missing file {f.name}")
+                    raise RuntimeError(f"missing file {n}")
         # directories.
         subdir_check: typing.Dict[str, None | DirectoryNode] = {}
         subdir_check_lock = threading.Lock()
@@ -623,6 +659,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
         if os.stat(dir_path).st_mode & stat.S_IWUSR:
             return None
         checksum_message = Directory()
+        files: typing.Dict[str, FileData] = {}
         subdirs: typing.Dict[str, DirectoryData] = {}
         for name in sorted(os.listdir(dir_path)):
             p = os.path.join(dir_path, name)
@@ -636,14 +673,11 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                         sha256.update(f.read(1024 * 1024))
                         if f.tell() == size_bytes:
                             break
-                checksum_message.files.append(
-                    FileNode(
-                        name=name,
-                        digest=Digest(
-                            hash=sha256.hexdigest(), size_bytes=size_bytes
-                        ),
-                    )
-                )
+                d = Digest(hash=sha256.hexdigest(), size_bytes=size_bytes)
+                is_executable = bool(os.stat(p).st_mode & stat.S_IXUSR)
+                fd = FileData(d, is_executable)
+                files[name] = fd
+                checksum_message.files.append(fd.to_file_node(name))
             elif os.path.isdir(p):
                 subdir_data = self._calculate_dir_digest(p)
                 if subdir_data is None:
@@ -661,7 +695,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             hash=hashlib.sha256(checksum_data).hexdigest(),
             size_bytes=len(checksum_data),
         )
-        return DirectoryData(checksum_digest, checksum_message.files, subdirs)
+        return DirectoryData(checksum_digest, files, subdirs)
 
     def _remove_cached_dir(self, name_in_cache: str):
         path_in_cache = os.path.join(self._cache_dir_root, name_in_cache)
@@ -685,9 +719,53 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                             unlink_file(os.path.join(dir_, n))
                 shutil.rmtree(path_in_cache)
 
-    # TODO: non-copy version.
-    def _calculate_required_size(self, dir_data: DirectoryData):
-        return dir_data.copy_size_bytes
+    def _calculate_required_size(
+        self,
+        dir_data: DirectoryData,
+        file_count: typing.Dict[str, int] | None = None,
+    ) -> typing.Tuple[int, typing.Dict[str, int] | None]:
+        new_file_count: typing.Dict[str, int] | None
+        if file_count is None:
+            new_file_count = None
+            result = dir_data.copy_size_bytes
+        else:
+            result = 0
+            new_file_count = {}
+            new_file_count.update(file_count)
+            for n, fd in dir_data.files():
+                if fd.name_in_cache not in new_file_count:
+                    new_file_count[fd.name_in_cache] = 1
+                    result += fd.digest.size_bytes
+                else:
+                    new_file_count[fd.name_in_cache] += 1
+            for n, subdir_data in dir_data.directories():
+                subdir_result, new_file_count = self._calculate_required_size(
+                    subdir_data, new_file_count
+                )
+                result += subdir_result
+        return result, new_file_count
 
-    def _calculate_released_size(self, dir_data: DirectoryData):
-        return dir_data.copy_size_bytes
+    def _calculate_released_size(
+        self,
+        dir_data: DirectoryData,
+        file_count: typing.Dict[str, int] | None = None,
+    ) -> typing.Tuple[int, typing.Dict[str, int] | None]:
+        new_file_count: typing.Dict[str, int] | None
+        if file_count is None:
+            new_file_count = None
+            result = dir_data.copy_size_bytes
+        else:
+            result = 0
+            new_file_count = {}
+            new_file_count.update(file_count)
+            for n, fd in dir_data.files():
+                new_file_count[fd.name_in_cache] -= 1
+                if new_file_count[fd.name_in_cache] == 0:
+                    result += fd.digest.size_bytes
+                    del new_file_count[fd.name_in_cache]
+            for n, subdir_data in dir_data.directories():
+                subdir_result, new_file_count = self._calculate_released_size(
+                    subdir_data, new_file_count
+                )
+                result += subdir_result
+        return result, new_file_count
