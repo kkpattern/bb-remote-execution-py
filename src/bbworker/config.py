@@ -73,6 +73,11 @@ class Platform(BaseModel):
     properties: typing.List[Property]
 
 
+class Sentry(BaseModel):
+    address: str
+    traces_sample_rate: float = 0.1
+
+
 class Config(BaseSettings):
     buildbarn: BuildbarnConfig
     platform: Platform
@@ -81,3 +86,4 @@ class Config(BaseSettings):
     build_directory_builder: BuildDirectoryBuilderConfig
     build_root: str
     concurrency: int = 1
+    sentry: Sentry | None
