@@ -354,6 +354,7 @@ class TestSharedTopLevelCachedDirectoryBuilder(object):
                     },
                 },
             ]
+            mock_cas_helper.set_data_executable(b"c" * 5, True)
             input_root_digest_list = []
             input_root_directory_list = []
             for input_root_data in input_root_data_list:
