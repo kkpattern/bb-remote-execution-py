@@ -1,6 +1,6 @@
 [project]
 name = "bbworker"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
   'grpcio>=1.50.0,<2.0.0',
   'protobuf>=4.21.9,<5.0.0',

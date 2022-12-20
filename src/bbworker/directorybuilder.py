@@ -166,7 +166,11 @@ class DirectoryDataCache:
         checksum_message = Directory()
         files = {}
         for f in sorted(directory.files, key=lambda fn: fn.name):
-            fd = FileData(f.digest, f.is_executable)
+            if sys.platform == "win32":
+                is_executable = False
+            else:
+                is_executable = f.is_executable
+            fd = FileData(f.digest, is_executable)
             files[f.name] = fd
             checksum_message.files.append(fd.to_file_node(f.name))
 
