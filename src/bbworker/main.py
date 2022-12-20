@@ -1,3 +1,4 @@
+import logging
 import sys
 import typing
 
@@ -127,7 +128,7 @@ class WorkerMain:
                     break
 
     def graceful_shutdown(self):
-        print("Ready to gracefully shutdown")
+        logging.info("Ready to gracefully shutdown")
         # TODO(gzzhangkai2014): prevent signal sent to subprocess.
         for t in self._worker_threads:
             t.graceful_shutdown()
