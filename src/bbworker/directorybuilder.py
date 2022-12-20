@@ -3,6 +3,7 @@ from __future__ import annotations
 import collections
 import concurrent.futures
 import functools
+import logging
 import os
 import os.path
 import hashlib
@@ -258,7 +259,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
         # on Windows platform, we cannot unlink a readonly hardlink. so we
         # use copy instead of hardlink on Windows.
         if sys.platform == "win32" and not copy_file:
-            print("WARNING: only copy file is supported on Windows platform")
+            logging.warn("only copy file is supported on Windows platform")
             self._copy_from_filesystem = True
         else:
             self._copy_from_filesystem = copy_file
@@ -617,7 +618,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
         rmtree(target)
 
     def _verify_existing_dirs(self) -> None:
-        print("INFO: verify directory start.")
+        logging.info("validate directory start.")
         dir_to_verify: typing.List[typing.Tuple[str, Digest]] = []
         for name in os.listdir(self._cache_dir_root):
             try:
@@ -666,7 +667,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                 self._file_count = file_count
         for name in dirs_to_evict:
             self._remove_cached_dir(name)
-        print("INFO: verify directory end.")
+        logging.info("validate directory end.")
 
     def _verify_thread(
         self, directory_to_verify: typing.Iterable[typing.Tuple[str, Digest]]
@@ -739,7 +740,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
 
     def _remove_cached_dir(self, name_in_cache: str):
         path_in_cache = os.path.join(self._cache_dir_root, name_in_cache)
-        print("remove cached directory:", path_in_cache)
+        logging.info("remove cached directory:", path_in_cache)
         self._meter.count("remove_cached_dir")
         with self._dir_lock.lock(path_in_cache):
             if os.path.exists(path_in_cache):
