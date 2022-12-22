@@ -458,10 +458,9 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
         else:
             future = concurrent.futures.Future()
             path_in_cache = os.path.join(self._cache_dir_root, name_in_cache)
-            tmp_in_cache = path_in_cache + ".tmp"
 
             inner_future = self._build_native_in_thread(
-                directory, tmp_in_cache, copy_file=copy_file
+                directory, path_in_cache, copy_file=copy_file
             )
 
             def _inner_finish(inner_future):
@@ -472,17 +471,13 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                             self._pending_cached_dir.get(name_in_cache, None)
                             is future
                         )
-                        assert os.path.isdir(tmp_in_cache)
-                        del self._pending_cached_dir[name_in_cache]
                         with self._dir_lock.lock(path_in_cache):
-                            # dir being evict but haven't been removed yet.
-                            # just remove it.
-                            if os.path.exists(path_in_cache):
-                                self._remove_cached_dir(name_in_cache)
-                            shutil.move(tmp_in_cache, path_in_cache)
                             set_dir_readonly_recursive(path_in_cache)
                         self._cached_dir[name_in_cache] = directory
+                        del self._pending_cached_dir[name_in_cache]
                 except Exception as e:
+                    if os.path.exists(path_in_cache):
+                        self._remove_cached_dir(name_in_cache)
                     with self._download_lock:
                         size_bytes, file_count = self._calculate_released_size(
                             directory, self._file_count
@@ -492,9 +487,6 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                     future.set_exception(e)
                 else:
                     future.set_result(checksum)
-                finally:
-                    if os.path.exists(tmp_in_cache):
-                        self._remove_cached_dir(name_in_cache)
 
             self._pending_cached_dir[name_in_cache] = future
             inner_future.add_done_callback(_inner_finish)
