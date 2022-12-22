@@ -126,6 +126,7 @@ class WorkerMain:
                         break
                 if not any_alived:
                     break
+        logging.info("Shutdown")
 
     def graceful_shutdown(self):
         logging.info("Ready to gracefully shutdown")
