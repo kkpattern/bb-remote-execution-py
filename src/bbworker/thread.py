@@ -1,3 +1,4 @@
+import logging
 import queue
 import time
 import threading
@@ -86,13 +87,16 @@ class WorkerThreadMain(threading.Thread):
                     sync_at = response.next_synchronization_at
                     sync_time = sync_at.seconds + sync_at.nanos * 0.000000001
                     sync_after = max(0, sync_time - time.time())
-                    self._desired_state_queue.put(response.desired_state)
+                    if response.desired_state.WhichOneof("worker_state"):
+                        self._desired_state_queue.put(response.desired_state)
                     try:
                         current_state = self._current_state_queue.get(
                             block=True, timeout=sync_after
                         )
                     except queue.Empty:
-                        pass
+                        if not self._runner_thread.is_alive():
+                            logging.critical("runner thread not alive")
+                            break
 
     def _synchronize(self, current_state: CurrentState) -> SynchronizeResponse:
         synchronize_request = SynchronizeRequest(
