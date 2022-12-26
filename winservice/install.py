@@ -15,15 +15,15 @@ platform:
     - name: "os"
       value: "windows"
 worker_id:
-  node: "{username}"
+  node: "{node_name}"
 filesystem:
   cache_root: "tmp/file_cache"
-  max_cache_size_bytes: "3G"
+  max_cache_size_bytes: "{max_file_cache_size_bytes}"
 build_directory_builder:
   cache_root: "tmp/dir_cache"
-  max_cache_size_bytes: "3G"
+  max_cache_size_bytes: "{max_dir_cache_size_bytes}"
 build_root: "tmp/build"
-concurrency: 3
+concurrency: {concurrency}
 sentry:
   address: "{sentry_address}"
   traces_sample_rate: 0.1
@@ -49,16 +49,25 @@ BBWORKER_EXE_NAME = "bbworker_service.exe"
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("version", nargs="?", default="latest")
+    parser.add_argument("--name", default=os.getlogin())
+    parser.add_argument("--concurrency", default=3)
+    parser.add_argument("--max-file-cache-size-bytes", default="3G")
+    parser.add_argument("--max-dir-cache-size-bytes", default="3G")
     return parser.parse_args()
 
 
-def write_config():
+def write_config(
+    node_name, concurrency, max_file_cache_size_bytes, max_dir_cache_size_bytes
+):
     with open("bbworker_service.yaml", "w") as f:
         f.write(
             CONFIG_TEMPLATE.format(
                 cas_address=CAS_ADDRESS,
                 scheduler_address=SCHEDULER_ADDRESS,
-                username=os.getlogin(),
+                node_name=node_name,
+                concurrency=concurrency,
+                max_file_cache_size_bytes=max_file_cache_size_bytes,
+                max_dir_cache_size_bytes=max_dir_cache_size_bytes,
                 sentry_address=SENTRY_ADDRESS,
             ).lstrip()
         )
@@ -113,7 +122,12 @@ def main():
     finally:
         if os.path.exists(tmp_bbworker_exe):
             os.unlink(tmp_bbworker_exe)
-    write_config()
+    write_config(
+        args.name,
+        args.concurrency,
+        args.max_file_cache_size_bytes,
+        args.max_dir_cache_size_bytes,
+    )
     subprocess.check_call([BBWORKER_EXE_NAME, "--startup", "auto", "install"])
     subprocess.check_call([BBWORKER_EXE_NAME, "start"])
 
