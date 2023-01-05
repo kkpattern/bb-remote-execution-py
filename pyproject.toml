@@ -1,6 +1,6 @@
 [project]
 name = "bbworker"
-version = "1.2.1"
+version = "1.2.2"
 dependencies = [
   'grpcio>=1.50.0,<2.0.0',
   'protobuf>=4.21.9,<5.0.0',
@@ -24,6 +24,9 @@ sentry = [
 otel = [
   'opentelemetry-sdk>=1.15.0,<2.0.0',
   'opentelemetry-exporter-prometheus',
+]
+winservice = [
+  'pywin32==305',
 ]
 
 [tool.setuptools.packages.find]
