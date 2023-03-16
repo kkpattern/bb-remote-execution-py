@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import typing
 import hashlib
 
@@ -18,10 +19,14 @@ class MockCASHelper(object):
     def __init__(self):
         self._data_store: typing.Dict[typing.Tuple[str, int], bytes] = {}
         self._call_history = []
+        self._seconds_per_byte: typing.Union[int, float] = 0
 
     @property
     def call_history(self):
         return self._call_history
+
+    def set_seconds_per_byte(self, v: typing.Union[int, float]):
+        self._seconds_per_byte = v
 
     def append_digest_data(self, data: bytes) -> Digest:
         size_bytes = len(data)
@@ -55,6 +60,9 @@ class MockCASHelper(object):
 
     def fetch_all(self, digests: typing.Iterable[Digest]):
         self._call_history.append(digests)
+        if self._seconds_per_byte > 0:
+            total_size = sum([d.size_bytes for d in digests])
+            time.sleep(total_size * self._seconds_per_byte)
         for d in digests:
             yield d, 0, self._data_store[(d.hash, d.size_bytes)]
 

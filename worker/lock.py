@@ -4,7 +4,7 @@ import typing
 
 
 class VariableLock(object):
-    def __init__(self):
+    def __init__(self) -> None:
         self._global_lock = threading.Lock()
         self._var_locks: typing.Dict[typing.Hashable, threading.Lock] = {}
 
