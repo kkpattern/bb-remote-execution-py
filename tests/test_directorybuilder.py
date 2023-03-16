@@ -1622,6 +1622,99 @@ class TestCacheSizeLimitWithCopy:
                 )
                 assert not os.path.exists(p)
 
+    def test_shrink_size(self, mock_cas_helper):
+        with (
+            tempfile.TemporaryDirectory() as filesystem_root,
+            tempfile.TemporaryDirectory() as local_root,
+            tempfile.TemporaryDirectory() as cache_root,
+        ):
+            test_data_list = [
+                {
+                    "file_1": b"a" * 100,
+                    "file_2": b"b" * 20,
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"c" * 5,
+                        "dir_1_1": {"file_1_1_1": b"x" * 5},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"x" * 5,
+                        "dir_1_1": {"file_1_1_1": b"x" * 5},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "file_1": b"a" * 100,
+                    "dir_1": {
+                        "file_1_3": b"d" * 15,
+                        "dir_1_1": {},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "file_1": b"a" * 100,
+                    "dir_1": {
+                        "file_1_3": b"x" * 15,
+                        "dir_1_1": {},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "dir_x": {
+                        "dir_1_1": {"file_1_1_1": b"o" * 15},
+                        "dir_1_2": {"file_1_2_1": b"z" * 5},
+                    },
+                },  # size_bytes: 20
+            ]
+            input_list = []
+            for data in test_data_list:
+                digest = mock_cas_helper.append_directory(data)
+                dir_ = mock_cas_helper.get_directory_by_digest(digest)
+                input_list.append((digest, dir_))
+            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem.init()
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root,
+                mock_cas_helper,
+                filesystem,
+                copy_file=True,
+                max_cache_size_bytes=100,
+            )
+            builder.init()
+            for i in [0, 1, 2]:
+                digest, dir_ = input_list[i]
+                builder.build(digest, dir_, local_root)
+            for i in [0, 3, 4]:
+                digest, dir_ = input_list[i]
+                builder.build(digest, dir_, local_root)
+            # simulate restart.
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root,
+                mock_cas_helper,
+                filesystem,
+                copy_file=True,
+                max_cache_size_bytes=60,
+            )
+            builder.init()
+
+            total_size_bytes = 0
+            for dir_, dirnames, filenames in os.walk(cache_root):
+                for n in filenames:
+                    p = os.path.join(dir_, n)
+                    total_size_bytes += os.path.getsize(p)
+            assert total_size_bytes == builder.current_size_bytes
+            assert builder.current_size_bytes == 60
+            for i in [1, 2]:
+                digest = input_list[i][1].directories[0].digest
+                p = os.path.join(
+                    cache_root, "dir", f"{digest.hash}_{digest.size_bytes}"
+                )
+                assert not os.path.exists(p)
+
     # TODO: download error remain broken directory.
     # TODO: test direcotry data cache.
 
@@ -1901,6 +1994,95 @@ class TestCacheSizeLimitWithHardlink:
                 digest, dir_ = input_list[i]
                 builder.build(digest, dir_, local_root)
 
+            total_size_bytes = _get_directory_size_inode(cache_root)
+            assert total_size_bytes == builder.current_size_bytes
+            assert builder.current_size_bytes == 60
+            for i in [1, 2]:
+                digest = input_list[i][1].directories[0].digest
+                p = os.path.join(
+                    cache_root, "dir", f"{digest.hash}_{digest.size_bytes}"
+                )
+                assert not os.path.exists(p)
+
+    def test_shrink_size(self, mock_cas_helper):
+        with (
+            tempfile.TemporaryDirectory() as filesystem_root,
+            tempfile.TemporaryDirectory() as local_root,
+            tempfile.TemporaryDirectory() as cache_root,
+        ):
+            test_data_list = [
+                {
+                    "file_1": b"a" * 100,
+                    "file_2": b"b" * 20,
+                    "dir_1": {
+                        "file_1_1": b"9" * 5,
+                        "file_1_2": b"0" * 5,
+                        "dir_1_1": {"file_1_1_1": b"1" * 5},
+                        "dir_1_2": {"file_1_1_1": b"2" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"x" * 5,
+                        "dir_1_1": {"file_1_1_1": b"3" * 5},
+                        "dir_1_2": {"file_1_1_1": b"4" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "file_1": b"a" * 100,
+                    "dir_1": {
+                        "file_1_3": b"d" * 15,
+                        "dir_1_1": {},
+                        "dir_1_2": {"file_1_1_1": b"5" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "file_1": b"a" * 100,
+                    "dir_1": {
+                        "file_1_3": b"x" * 15,
+                        "dir_1_1": {},
+                        "dir_1_2": {"file_1_1_1": b"6" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "dir_x": {
+                        "dir_1_1": {"file_1_1_1": b"7" * 15},
+                        "dir_1_2": {"file_1_2_1": b"8" * 5},
+                    },
+                },  # size_bytes: 20
+            ]
+            input_list = []
+            for data in test_data_list:
+                digest = mock_cas_helper.append_directory(data)
+                dir_ = mock_cas_helper.get_directory_by_digest(digest)
+                input_list.append((digest, dir_))
+            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem.init()
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root,
+                mock_cas_helper,
+                filesystem,
+                copy_file=False,
+                max_cache_size_bytes=100,
+            )
+            builder.init()
+            for i in [0, 1, 2]:
+                digest, dir_ = input_list[i]
+                builder.build(digest, dir_, local_root)
+            for i in [0, 3, 4]:
+                digest, dir_ = input_list[i]
+                builder.build(digest, dir_, local_root)
+
+            # simulate restart.
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root,
+                mock_cas_helper,
+                filesystem,
+                copy_file=False,
+                max_cache_size_bytes=60,
+            )
+            builder.init()
             total_size_bytes = _get_directory_size_inode(cache_root)
             assert total_size_bytes == builder.current_size_bytes
             assert builder.current_size_bytes == 60
