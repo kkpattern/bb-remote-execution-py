@@ -20,6 +20,6 @@ mypy-check:
       # Workaround a mypy cache bug.
     - rm -rf .mypy_cache
   script:
-    - mypy src/bbworker
+    - mypy --install-types --non-interactive src/bbworker
   only:
     - merge_requests

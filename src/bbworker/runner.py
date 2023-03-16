@@ -132,7 +132,7 @@ def execute_command(
     if result.returncode == 0:
         # Check outputs.
         if command.output_paths:
-            output_paths = command.output_paths
+            output_paths: typing.Iterable[str] = command.output_paths
         else:
             output_paths = list(command.output_files)
             output_paths.extend(command.output_directories)

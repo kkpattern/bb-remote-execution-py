@@ -1,3 +1,4 @@
+import argparse
 import signal
 import sys
 
@@ -6,8 +7,11 @@ from google.bytestream.bytestream_pb2_grpc import ByteStreamStub
 from build.bazel.remote.execution.v2.remote_execution_pb2_grpc import (
     ContentAddressableStorageStub,
 )
+import pydantic
+import yaml
 
 from .cas import CASHelper
+from .config import Config
 from .directorybuilder import SharedTopLevelCachedDirectoryBuilder
 from .filesystem import LocalHardlinkFilesystem
 from .thread import WorkerThreadMain
@@ -16,17 +20,31 @@ from .thread import WorkerThreadMain
 MAX_MESSAGE_LENGTH = 16 * 1024 * 1024
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("config_file")
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    with open(args.config_file, "r") as f:
+        data = yaml.load(f.read(), Loader=yaml.Loader)
+    try:
+        config = Config.parse_obj(data)
+    except pydantic.error_wrappers.ValidationError as e:
+        sys.stderr.write(f"{e}\n")
+        sys.exit(1)
     with (
         grpc.insecure_channel(
-            "10.212.214.123:8983",
+            config.buildbarn.scheduler_address,
             options=[
                 ("grpc.max_send_message_length", MAX_MESSAGE_LENGTH),
                 ("grpc.max_receive_message_length", MAX_MESSAGE_LENGTH),
             ],
         ) as channel,
         grpc.insecure_channel(
-            "10.212.214.130:8980",
+            config.buildbarn.cas_address,
             options=[
                 ("grpc.max_send_message_length", MAX_MESSAGE_LENGTH),
                 ("grpc.max_receive_message_length", MAX_MESSAGE_LENGTH),
@@ -46,7 +64,7 @@ def main():
         if sys.platform == "win32":
             signal.signal(signal.SIGBREAK, lambda s, f: graceful_shutdown())
 
-        filesystem = LocalHardlinkFilesystem("tmp/file_cache")
+        filesystem = LocalHardlinkFilesystem(config.filesystem.cache_root)
         filesystem.init()
 
         cas_stub = ContentAddressableStorageStub(cas_channel)
@@ -54,14 +72,21 @@ def main():
         cas_helper = CASHelper(cas_stub, cas_byte_stream_stub)
 
         directory_builder = SharedTopLevelCachedDirectoryBuilder(
-            "tmp/dir_cache",
+            config.build_directory_builder.cache_root,
             cas_helper,
             filesystem,
         )
         directory_builder.init()
-        for i in range(10):
+        for i in range(config.concurrency):
             thread_main = WorkerThreadMain(
-                channel, cas_channel, filesystem, directory_builder, i
+                channel,
+                cas_channel,
+                config.platform,
+                config.worker_id,
+                filesystem,
+                directory_builder,
+                config.build_root,
+                i,
             )
             thread_main.start()
             worker_threads.append(thread_main)
