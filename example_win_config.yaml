@@ -1,0 +1,15 @@
+buildbarn:
+  cas_address: "<ip:port>"
+  scheduler_address: "<ip:port>"
+platform:
+  properties:
+    - name: "os"
+      value: "windows"
+worker_id:
+  node: "windows-dev"
+filesystem:
+  cache_root: "tmp/file_cache"
+build_directory_builder:
+  cache_root: "tmp/dir_cache"
+build_root: "tmp/build"
+concurrency: 10
