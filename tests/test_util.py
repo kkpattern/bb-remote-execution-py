@@ -2,7 +2,7 @@ import os.path
 import sys
 import tempfile
 
-from worker.util import link_file
+from bbworker.util import link_file
 
 
 if sys.platform == "win32":

@@ -10,11 +10,11 @@ import uuid
 
 import pytest
 
-from worker.directorybuilder import SharedTopLevelCachedDirectoryBuilder
-from worker.filesystem import LocalHardlinkFilesystem
+from bbworker.directorybuilder import SharedTopLevelCachedDirectoryBuilder
+from bbworker.filesystem import LocalHardlinkFilesystem
 
-from worker.util import unlink_readonly_file
-from worker.util import set_read_exec_write
+from bbworker.util import unlink_readonly_file
+from bbworker.util import set_read_exec_write
 
 
 def _assert_directory(
