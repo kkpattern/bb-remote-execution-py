@@ -144,7 +144,7 @@ class FetchBatch(object):
 
 
 class UpdateBatch(object):
-    def __init__(self):
+    def __init__(self) -> None:
         self._providers: typing.List[IProvider] = []
         self._total_size_bytes = 0
 
@@ -173,6 +173,42 @@ class CASHelper(object):
         self._cas_stub = cas_stub
         self._byte_steam_stub = cas_byte_stream_stub
         self._msg_size_bytes_limit = msg_size_bytes_limit
+
+    def fetch_all(
+        self, digests: typing.Iterable[Digest]
+    ) -> typing.Iterator[typing.Tuple[Digest, bytes]]:
+        batch = FetchBatch()
+        batch_list = [batch]
+        bytes_limit = self._msg_size_bytes_limit
+        large_blob = {}
+        for each_digest in digests:
+            size_bytes = each_digest.size_bytes
+            if size_bytes >= bytes_limit:
+                large_blob[
+                    (each_digest.hash, each_digest.size_bytes)
+                ] = each_digest
+            elif batch.total_size_bytes + size_bytes < bytes_limit:
+                batch.append_digest(each_digest)
+            else:
+                batch = FetchBatch()
+                batch.append_digest(each_digest)
+                batch_list.append(batch)
+        for i, batch in enumerate(batch_list):
+            if batch.digests:
+                request = BatchReadBlobsRequest(digests=batch.digests)
+                response = self._cas_stub.BatchReadBlobs(request)
+                for each in response.responses:
+                    if each.status.code != grpc.StatusCode.OK.value[0]:
+                        print(each.status.message)
+                        continue
+                    yield each.digest, each.data
+
+        for each_digest in large_blob.values():
+            bytes_stream = self._read_bytes_from_stream(each_digest)
+            tmp = bytearray()
+            for offset, data in bytes_stream:
+                tmp.extend(data)
+            yield each_digest, bytes(tmp)
 
     def fetch_all_block(
         self, digests: typing.Iterable[Digest]
@@ -294,7 +330,7 @@ CacheResult = typing.Tuple[Digest, int, bytes]
 class CASCache(object):
     """A CAS cache.
 
-    NOTE: If a blob is larger than message size it won't be cached.
+    NOTE: If a blob is larger than max_size_bytes it won't be cached.
     """
 
     def __init__(self, backend: CASHelper, max_size_bytes: int = 0):
@@ -322,6 +358,19 @@ class CASCache(object):
                 missing_list.append(each)
         return (result_list, missing_list)
 
+    def fetch_all(
+        self, digests: typing.Iterable[Digest]
+    ) -> typing.Iterator[typing.Tuple[Digest, bytes]]:
+        result_list, missing_list = self._fetch_all_in_cache(digests)
+        if missing_list:
+            for d, data in self._backend.fetch_all(missing_list):
+                # Small enough to cache.
+                if not (d.size_bytes > self._max_size_bytes > 0):
+                    self._add_to_cache(d, data)
+                yield d, data
+        for d, data in result_list:
+            yield d, data
+
     def fetch_all_block(
         self, digests: typing.Iterable[Digest]
     ) -> typing.Iterator[typing.Tuple[Digest, int, bytes]]:
@@ -330,13 +379,16 @@ class CASCache(object):
             for d, offset, data in self._backend.fetch_all_block(missing_list):
                 # Small enough to cache.
                 if d.size_bytes == len(data):
-                    self._cache[(d.hash, d.size_bytes)] = data
-                    self._total_size_bytes += d.size_bytes
-                    while self._total_size_bytes > self._max_size_bytes > 0:
-                        for key in self._cache:
-                            self._cache.pop(key)
-                            self._total_size_bytes -= key[1]
-                            break
+                    self._add_to_cache(d, data)
                 yield d, offset, data
         for d, data in result_list:
             yield d, 0, data
+
+    def _add_to_cache(self, d: Digest, data: bytes):
+        self._cache[(d.hash, d.size_bytes)] = data
+        self._total_size_bytes += d.size_bytes
+        while self._total_size_bytes > self._max_size_bytes > 0:
+            for key in self._cache:
+                self._cache.pop(key)
+                self._total_size_bytes -= key[1]
+                break

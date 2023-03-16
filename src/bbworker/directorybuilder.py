@@ -1,5 +1,6 @@
 import collections
 import concurrent.futures
+import functools
 import os
 import os.path
 import hashlib
@@ -31,6 +32,8 @@ from .util import remove_dir_link
 DigestKey = typing.Tuple[str, int]
 OptionalDigestKey = typing.Optional[DigestKey]
 
+FutureDigest = concurrent.futures.Future[Digest]
+
 
 def digest_to_key(digest: Digest):
     return f"{digest.hash}_{digest.size_bytes}"
@@ -55,6 +58,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
         filesystem: LocalHardlinkFilesystem,
         *,
         skip_cache: typing.Optional[typing.Iterable[str]] = None,
+        concurrency: int = 10,
     ):
         self._cache_dir_root = os.path.join(cache_root, "dir")
         self._cache_digest_root = os.path.join(cache_root, "digest")
@@ -73,6 +77,9 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             self._skip_cache = set(skip_cache)
         self._dir_lock = VariableLock()
         self._download_lock = threading.RLock()
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=concurrency, thread_name_prefix="directory_builder_"
+        )
         # on Windows platform, we cannot unlink a readonly hardlink. so we
         # use copy instead of hardlink on Windows.
         self._copy_from_filesystem = sys.platform == "win32"
@@ -200,7 +207,10 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             key = (digest.hash, digest.size_bytes)
             dir_digest_to_fetch[key] = digest
             dir_digest_to_names[key].append(dn.name)
-        for digest, offset, data in self._directory_blob_cache.fetch_all_block(
+
+        build_native_futures: typing.List[FutureDigest] = []
+        delayed_link = {}
+        for digest, data in self._directory_blob_cache.fetch_all(
             dir_digest_to_fetch.values()
         ):
             key = (digest.hash, digest.size_bytes)
@@ -214,12 +224,13 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                     if name in large_directory:
                         self._build_with_cache(subdirectory, dir_local_path)
                     elif name in skip_cache:
-                        self._build_native(
+                        f = self._build_native_in_thread(
                             subdirectory,
                             dir_local_path,
                             readonly=False,
                             copy_file=self._copy_from_filesystem,
                         )
+                        build_native_futures.append(f)
                     else:
                         path_to_link.append(dir_local_path)
                 if path_to_link:
@@ -227,34 +238,64 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                         self._cache_dir_root, name_in_cache
                     )
                     tmp_in_cache = path_in_cache + ".tmp"
-                    cdigest = self._build_native(
+                    f = self._build_native_in_thread(
                         subdirectory,
                         tmp_in_cache,
                         copy_file=self._copy_from_filesystem,
                     )
-                    with self._dir_lock.lock(path_in_cache):
-                        set_read_exec_write(tmp_in_cache)
-                        shutil.move(tmp_in_cache, path_in_cache)
-                        set_read_exec_only(path_in_cache)
-
-                        checksum_path = os.path.join(
-                            self._cache_digest_root, name_in_cache
-                        )
-                        with open(checksum_path, "w") as f:
-                            f.write(f"{cdigest.hash}_{cdigest.size_bytes}\n")
-                        for dir_local_path in path_to_link:
-                            create_dir_link(path_in_cache, dir_local_path)
+                    delayed_link[f] = (name_in_cache, path_to_link)
+                    build_native_futures.append(f)
             else:
                 # TODO:
                 print("Unknown digest")
 
-    def _build_native(
+        for fut in concurrent.futures.as_completed(build_native_futures):
+            if fut in delayed_link:
+                cdigest = fut.result()
+                name_in_cache, path_to_link = delayed_link[fut]
+                path_in_cache = os.path.join(
+                    self._cache_dir_root, name_in_cache
+                )
+                tmp_in_cache = path_in_cache + ".tmp"
+                with self._dir_lock.lock(path_in_cache):
+                    set_read_exec_write(tmp_in_cache)
+                    shutil.move(tmp_in_cache, path_in_cache)
+                    set_read_exec_only(path_in_cache)
+
+                    checksum_path = os.path.join(
+                        self._cache_digest_root, name_in_cache
+                    )
+                    with open(checksum_path, "w") as check_f:
+                        check_f.write(f"{cdigest.hash}_{cdigest.size_bytes}\n")
+                    for dir_local_path in path_to_link:
+                        create_dir_link(path_in_cache, dir_local_path)
+
+    def _build_native_in_thread(
         self,
         input_root: Directory,
         directory_local: str,
         readonly: bool = True,
         copy_file: bool = False,
-    ) -> Digest:
+    ) -> FutureDigest:
+        future: FutureDigest = concurrent.futures.Future()
+        self._executor.submit(
+            self._build_native,
+            future,
+            input_root,
+            directory_local,
+            readonly=readonly,
+            copy_file=copy_file,
+        )
+        return future
+
+    def _build_native(
+        self,
+        future: FutureDigest,
+        input_root: Directory,
+        directory_local: str,
+        readonly: bool = True,
+        copy_file: bool = False,
+    ):
         dir_message = Directory()
         if not os.path.exists(directory_local):
             os.makedirs(directory_local)
@@ -285,39 +326,62 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             key = (dir_digest.hash, dir_digest.size_bytes)
             dir_digest_to_fetch[key] = dir_digest
             dir_digest_to_names[key].append(dir_node.name)
-        subdir_check_node = []
-        for digest, offset, data in self._directory_blob_cache.fetch_all_block(
+        subdir_check: typing.Dict[str, None | DirectoryNode] = {}
+        subdir_check_lock = threading.Lock()
+
+        def _set_result():
+            if readonly:
+                set_read_exec_only(directory_local)
+            dir_data = dir_message.SerializeToString(deterministic=True)
+            future.set_result(
+                Digest(
+                    hash=hashlib.sha256(dir_data).hexdigest(),
+                    size_bytes=len(dir_data),
+                )
+            )
+
+        def _subdir_build_callback(name: str, fut: FutureDigest):
+            digest = fut.result()
+            with subdir_check_lock:
+                subdir_check[name] = DirectoryNode(name=name, digest=digest)
+
+                if all(subdir_check.values()):
+                    for name in sorted(subdir_check):
+                        n = subdir_check[name]
+                        assert n
+                        dir_message.directories.append(n)
+                    # TODO: better exception.
+                    for d in input_root.directories:
+                        if not os.path.exists(
+                            os.path.join(directory_local, d.name)
+                        ):
+                            raise RuntimeError(f"missing directory {d.name}")
+                    _set_result()
+
+        for digest, data in self._directory_blob_cache.fetch_all(
             dir_digest_to_fetch.values()
         ):
             key = (digest.hash, digest.size_bytes)
-            if key in dir_digest_to_names:
+            try:
+                names = dir_digest_to_names[key]
+            except KeyError:
+                pass
+            else:
                 subdirectory = Directory()
                 subdirectory.ParseFromString(data)
-                for name in dir_digest_to_names[key]:
-                    subdirectory_cdigest = self._build_native(
+                for each_name in names:
+                    subdir_check[each_name] = None
+                    sub_future = self._build_native_in_thread(
                         subdirectory,
-                        os.path.join(directory_local, name),
+                        os.path.join(directory_local, each_name),
                         readonly=readonly,
                         copy_file=copy_file,
                     )
-                    subdir_check_node.append(
-                        DirectoryNode(name=name, digest=subdirectory_cdigest)
+                    sub_future.add_done_callback(
+                        functools.partial(_subdir_build_callback, each_name)
                     )
-            else:
-                # TODO:
-                print("Unknown digest")
-        for dn in sorted(subdir_check_node, key=lambda dn: dn.name):
-            dir_message.directories.append(dn)
-        # TODO: better exception.
-        for d in input_root.directories:
-            if not os.path.exists(os.path.join(directory_local, d.name)):
-                raise RuntimeError(f"missing directory {d.name}")
-        if readonly:
-            set_read_exec_only(directory_local)
-        dir_data = dir_message.SerializeToString(deterministic=True)
-        return Digest(
-            hash=hashlib.sha256(dir_data).hexdigest(), size_bytes=len(dir_data)
-        )
+        if not subdir_check:
+            _set_result()
 
     def _remove_large_directory(self, target: str):
         for name in os.listdir(target):
@@ -363,17 +427,13 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                 dir_to_verify[i::verify_thread_count]
                 for i in range(verify_thread_count)
             ]
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=verify_thread_count,
-                thread_name_prefix="verify_dir_thread_",
-            ) as executor:
-                future_list = []
-                for part in mapped_digests:
-                    future_list.append(
-                        executor.submit(self._verify_thread, part)
-                    )
-                for future in future_list:
-                    future.result()
+            future_list = []
+            for part in mapped_digests:
+                future_list.append(
+                    self._executor.submit(self._verify_thread, part)
+                )
+            for future in future_list:
+                future.result()
         print("INFO: verify directory end.")
 
     def _verify_thread(
