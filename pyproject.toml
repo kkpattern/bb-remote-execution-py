@@ -9,9 +9,11 @@ dependencies = [
 [project.optional-dependencies]
 test = [
   'pytest>=7.2.0,<8.0.0',
+  'mypy==0.991',
 ]
 dev = [
   'flake8>=6.0.0,<7.0.0',
+  'black>=22.10.0,<23.0.0',
 ]
 
 [tool.setuptools]
