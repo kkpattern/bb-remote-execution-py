@@ -390,7 +390,6 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             )
             if self._max_cache_size_bytes > 0 > available_size_bytes:
                 released_size = 0
-                print("??")
                 for name_in_cache in self._cached_dir:
                     if name_in_cache in cached_names:
                         continue
@@ -399,7 +398,6 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                         self._cached_dir[name_in_cache], file_count
                     )
                     released_size += size_bytes
-                    print(released_size, available_size_bytes)
                     if available_size_bytes + released_size >= 0:
                         break
                 if available_size_bytes + released_size < 0:
