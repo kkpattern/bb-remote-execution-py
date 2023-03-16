@@ -362,7 +362,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
         dir_need_to_evict = []
         with self._download_lock:
             required_size_bytes = 0
-            cached_names: typing.List[str] = []
+            cached_names: typing.Set[str] = set()
             dirs_to_download: typing.Dict[str, DirectoryData] = {}
             file_count = self._file_count
             for name, subdir in cached_dir_to_build.items():
@@ -371,7 +371,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                 if name_in_cache in self._cached_dir:
                     # other thread may downloaded the same directory at the
                     # same time.
-                    cached_names.append(name_in_cache)
+                    cached_names.add(name_in_cache)
                 elif name_in_cache in self._pending_cached_dir:
                     # other thread is downloading the same directory.
                     f = self._pending_cached_dir[name_in_cache]
@@ -390,12 +390,16 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             )
             if self._max_cache_size_bytes > 0 > available_size_bytes:
                 released_size = 0
+                print("??")
                 for name_in_cache in self._cached_dir:
+                    if name_in_cache in cached_names:
+                        continue
                     dir_need_to_evict.append(name_in_cache)
                     size_bytes, file_count = self._calculate_released_size(
                         self._cached_dir[name_in_cache], file_count
                     )
                     released_size += size_bytes
+                    print(released_size, available_size_bytes)
                     if available_size_bytes + released_size >= 0:
                         break
                 if available_size_bytes + released_size < 0:
