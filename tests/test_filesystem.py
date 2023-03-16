@@ -4,7 +4,6 @@ import os.path
 import random
 import stat
 import tempfile
-import threading
 import uuid
 
 import pytest
@@ -229,9 +228,13 @@ class TestLocalHardlinkFilesystem(object):
             tempfile.TemporaryDirectory() as filesystem_root,
             tempfile.TemporaryDirectory() as target_root,
         ):
+            mock_cas_helper.set_seconds_per_byte(0.001)
             test_data_list = []
-            for i in range(5000):
-                test_data_list.append((f"file_{i}", b"abcd" * (i % 20 + 1)))
+
+            for i in range(500):
+                test_data_list.append(
+                    (f"file_{i}", (f"abcd{i}" * (i % 20 + 1)).encode())
+                )
 
             test_file_list = []
             for name, data in test_data_list:
@@ -247,8 +250,8 @@ class TestLocalHardlinkFilesystem(object):
                 os.makedirs(thread_root)
                 shuffled_list = list(test_file_list)
                 random.shuffle(shuffled_list)
-                part_size = 5
-                parts = [shuffled_list[i::part_size] for i in range(part_size)]
+                part_n = 1000
+                parts = [shuffled_list[i::part_n] for i in range(part_n)]
                 for p in parts:
                     filesystem.fetch_to(
                         mock_cas_helper,
