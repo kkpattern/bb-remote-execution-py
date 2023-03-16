@@ -45,3 +45,22 @@ upload:
   only:
     - tags
   when: manual
+
+upload-winservice:
+  stage: deploy
+  tags:
+    - windows
+  before_script:
+    - chcp 65001
+    - py -3 -m venv .winservice
+    - call ./.winservice/Scripts/activate
+    - pip install ".[sentry,otel,winservice]"
+    - pip install pyinstaller==5.7.0
+    - pip install boto3==1.23.10
+  script:
+    - cd winservice
+    - call build.bat
+    - python upload.py "dist/bbworker_service.exe" "--s3-key" %S3_ACCESS_KEY% "--s3-secret" %S3_ACCESS_SECRET% "--s3-bucket" "gzdev2-echoes-assets"
+  only:
+    - tags
+  when: manual
