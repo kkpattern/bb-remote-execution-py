@@ -130,8 +130,26 @@ def execute_command(
         stderr=subprocess.PIPE,
         cwd=working_directory,
     )
+
+    update_provider_list: typing.List[IProvider] = []
+
     stdout_digest = None
     stderr_digest = None
+    if result.stdout:
+        stdout_provider = BytesProvider(result.stdout)
+        stdout_digest = Digest(
+            hash=stdout_provider.hash_,
+            size_bytes=stdout_provider.size_bytes,
+        )
+        update_provider_list.append(stdout_provider)
+
+    if result.stderr:
+        stderr_provider = BytesProvider(result.stderr)
+        stderr_digest = Digest(
+            hash=stderr_provider.hash_,
+            size_bytes=stderr_provider.size_bytes,
+        )
+        update_provider_list.append(stderr_provider)
     if result.returncode == 0:
         # Check outputs.
         if command.output_paths:
@@ -150,24 +168,7 @@ def execute_command(
                     "Output directory is not implemented yet."
                 )
         # Then generate ActionResult.
-        update_provider_list: typing.List[IProvider] = []
         output_files = []
-
-        if result.stdout:
-            stdout_provider = BytesProvider(result.stdout)
-            stdout_digest = Digest(
-                hash=stdout_provider.hash_,
-                size_bytes=stdout_provider.size_bytes,
-            )
-            update_provider_list.append(stdout_provider)
-
-        if result.stderr:
-            stderr_provider = BytesProvider(result.stderr)
-            stderr_digest = Digest(
-                hash=stderr_provider.hash_,
-                size_bytes=stderr_provider.size_bytes,
-            )
-            update_provider_list.append(stderr_provider)
 
         for each in output_paths:
             local_path = os.path.join(build_directory, each)
@@ -185,9 +186,10 @@ def execute_command(
                     )
                 )
             # TODO: Directory.
-        cas_helper.update_all(update_provider_list)
     else:
         output_files = []
+
+    cas_helper.update_all(update_provider_list)
 
     state_queue.put(
         CurrentState(
@@ -275,13 +277,12 @@ class RunnerThread(threading.Thread):
                         action.input_root_digest,
                         input_root,
                     )
-                    if action_result.exit_code == 0:
-                        self._action_cache_stub.UpdateActionResult(
-                            UpdateActionResultRequest(
-                                action_digest=action_digest,
-                                action_result=action_result,
-                            )
+                    self._action_cache_stub.UpdateActionResult(
+                        UpdateActionResultRequest(
+                            action_digest=action_digest,
+                            action_result=action_result,
                         )
+                    )
                     response = ExecuteResponse(
                         result=action_result,
                         cached_result=False,
