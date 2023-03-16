@@ -11,13 +11,16 @@ from build.bazel.remote.execution.v2.remote_execution_pb2 import FileNode
 
 import pytest
 
+from bbworker.directorybuilder import DirectoryData
 
-DirectoryData = typing.Dict[str, typing.Union[bytes, "DirectoryData"]]
+
+DirectoryDict = typing.Dict[str, typing.Union[bytes, "DirectoryDict"]]
 
 
 class MockCASHelper(object):
     def __init__(self):
         self._data_store: typing.Dict[typing.Tuple[str, int], bytes] = {}
+        self._exceptions: typing.Dict[typing.Tuple[str, int], Exception] = {}
         self._call_history = []
         self._seconds_per_byte: typing.Union[int, float] = 0
 
@@ -29,9 +32,7 @@ class MockCASHelper(object):
         self._seconds_per_byte = v
 
     def append_digest_data(self, data: bytes) -> Digest:
-        size_bytes = len(data)
-        hash_value = hashlib.sha256(data).hexdigest()
-        digest = Digest(hash=hash_value, size_bytes=size_bytes)
+        digest = self._data_to_digest(data)
         self._data_store[(digest.hash, digest.size_bytes)] = data
         return digest
 
@@ -39,7 +40,7 @@ class MockCASHelper(object):
         digest = self.append_digest_data(data)
         return FileNode(name=name, digest=digest)
 
-    def append_directory(self, directory_data: DirectoryData) -> Digest:
+    def append_directory(self, directory_data: DirectoryDict) -> Digest:
         directory = Directory()
         for key in sorted(directory_data):
             value = directory_data[key]
@@ -58,13 +59,27 @@ class MockCASHelper(object):
         d.ParseFromString(data)
         return d
 
+    def get_directory_data_by_digest(self, digest: Digest) -> DirectoryData:
+        data = self._data_store[(digest.hash, digest.size_bytes)]
+        d = Directory()
+        d.ParseFromString(data)
+        subdirs = {}
+        for fnode in d.directories:
+            subdirs[fnode.name] = self.get_directory_data_by_digest(
+                fnode.digest
+            )
+        return DirectoryData(digest, d.files, subdirs)
+
     def fetch_all(self, digests: typing.Iterable[Digest]):
         self._call_history.append(digests)
         if self._seconds_per_byte > 0:
             total_size = sum([d.size_bytes for d in digests])
             time.sleep(total_size * self._seconds_per_byte)
         for d in digests:
-            yield d, self._data_store[(d.hash, d.size_bytes)]
+            key = (d.hash, d.size_bytes)
+            if key in self._exceptions:
+                raise self._exceptions[key]
+            yield d, self._data_store[key]
 
     def fetch_all_block(self, digests: typing.Iterable[Digest]):
         self._call_history.append(digests)
@@ -72,10 +87,22 @@ class MockCASHelper(object):
             total_size = sum([d.size_bytes for d in digests])
             time.sleep(total_size * self._seconds_per_byte)
         for d in digests:
+            key = (d.hash, d.size_bytes)
+            if key in self._exceptions:
+                raise self._exceptions[key]
             yield d, 0, self._data_store[(d.hash, d.size_bytes)]
+
+    def set_data_exception(self, data: bytes, exception: Exception):
+        digest = self._data_to_digest(data)
+        self._exceptions[(digest.hash, digest.size_bytes)] = exception
 
     def clear_call_history(self):
         self._call_history = []
+
+    def _data_to_digest(self, data: bytes) -> Digest:
+        size_bytes = len(data)
+        hash_value = hashlib.sha256(data).hexdigest()
+        return Digest(hash=hash_value, size_bytes=size_bytes)
 
 
 @pytest.fixture

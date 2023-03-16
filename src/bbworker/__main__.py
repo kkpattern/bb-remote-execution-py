@@ -77,11 +77,13 @@ def main():
         cas_byte_stream_stub = ByteStreamStub(cas_channel)
         cas_helper = CASHelper(cas_stub, cas_byte_stream_stub)
 
+        builder_config = config.build_directory_builder
         directory_builder = SharedTopLevelCachedDirectoryBuilder(
-            config.build_directory_builder.cache_root,
+            builder_config.cache_root,
             cas_helper,
             filesystem,
-            concurrency=config.build_directory_builder.concurrency,
+            max_cache_size_bytes=builder_config.max_cache_size_bytes,
+            concurrency=builder_config.concurrency,
         )
         directory_builder.init()
         for i in range(config.concurrency):
