@@ -1,3 +1,4 @@
+import logging
 import os
 import os.path
 import queue
@@ -54,7 +55,9 @@ def get_action_detail(
     input_root = None
     for each in response.responses:
         if each.status.code != grpc.StatusCode.OK.value[0]:
-            print(each.status.message)
+            logging.error(
+                f"failed to get action detail: {each.status.message}"
+            )
             continue
         if each.digest == command_digest:
             command = Command()
@@ -285,7 +288,6 @@ class RunnerThread(threading.Thread):
             if desired_state.WhichOneof("worker_state") == "executing":
                 self._meter.count("action")
                 action_digest = desired_state.executing.action_digest
-                # print(f"Action {action_digest.hash} started")
                 should_executing = desired_state.executing
                 self._current_state_queue.put(
                     CurrentState(
@@ -328,6 +330,5 @@ class RunnerThread(threading.Thread):
                                 action_result=response.result,
                             )
                         )
-                # print(f"Action {action_digest.hash} finished")
             else:
                 self._current_state_queue.put(CurrentState(idle={}))

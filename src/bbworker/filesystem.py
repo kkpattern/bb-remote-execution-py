@@ -2,6 +2,7 @@ import collections
 import concurrent.futures
 import hashlib
 import io
+import logging
 import os
 import os.path
 import typing
@@ -128,6 +129,7 @@ class LocalHardlinkFilesystem(object):
         self._verify_existing_files()
 
     def _verify_existing_files(self) -> None:
+        logging.info("validate cached files start.")
         self._cached_files.clear()
         self._current_size_bytes = 0
         file_to_verify: typing.List[str] = []
@@ -169,6 +171,7 @@ class LocalHardlinkFilesystem(object):
                     self._cache_root_dir, name_in_cache
                 )
                 unlink_readonly_file(path_in_cache)
+        logging.info("validate cached files end.")
 
     def _verify_thread(self, file_to_verify: typing.Iterable[str]):
         file_cache_info: typing.Dict[str, FileCacheInfo] = {}

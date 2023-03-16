@@ -3,6 +3,7 @@ import hashlib
 import os.path
 import typing
 import uuid
+import logging
 
 import grpc
 import grpc.aio
@@ -325,8 +326,9 @@ class CASHelper(object):
             response = self._cas_stub.BatchUpdateBlobs(update_request)
             for each in response.responses:
                 if each.status.code != grpc.StatusCode.OK.value[0]:
-                    # TODO: log or exception?
-                    print(each.status.message)
+                    logging.error(
+                        f"failed to update blobs: {each.status.message}"
+                    )
 
     def _write_bytes_to_steam(self, provider: IProvider):
         self._byte_steam_stub.Write(self._write_requests(provider))
