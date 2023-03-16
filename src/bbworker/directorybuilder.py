@@ -132,8 +132,11 @@ class DirectoryData:
 
 
 class DirectoryDataCache:
-    def __init__(self, cas_helper: CASHelper, max_cached: int = 5000):
+    def __init__(
+        self, cas_helper: CASHelper, meter: MeterBase, max_cached: int = 5000
+    ):
         self._cas_helper = cas_helper
+        self._meter = meter
         self._max_cached = max_cached
         self._global_lock = threading.Lock()
         self._cache: typing.Dict[
@@ -141,17 +144,18 @@ class DirectoryDataCache:
         ] = collections.OrderedDict()
 
     def fetch_directory_data(
-        self, digest: Digest, directory: Directory, with_cache: bool
+        self, digest: Digest, directory: Directory
     ) -> DirectoryData:
         result = None
         key = f"{digest.hash}_{digest.size_bytes}"
-        if with_cache:
-            with self._global_lock:
-                if key in self._cache:
-                    result = self._cache.pop(key)
-                    self._cache[key] = result
+        self._meter.count("fetch_directory_data_access")
+        with self._global_lock:
+            if key in self._cache:
+                self._meter.count("fetch_directory_data_cache_hit")
+                result = self._cache.pop(key)
+                self._cache[key] = result
         if result is None:
-            result = self._fetch_directory_data(digest, directory, with_cache)
+            result = self._fetch_directory_data(digest, directory)
             with self._global_lock:
                 self._cache[key] = result
                 while len(self._cache) > self._max_cached:
@@ -161,7 +165,7 @@ class DirectoryDataCache:
         return result
 
     def _fetch_directory_data(
-        self, digest: Digest, directory: Directory, with_cache: bool
+        self, digest: Digest, directory: Directory
     ) -> DirectoryData:
         checksum_message = Directory()
         files = {}
@@ -196,7 +200,7 @@ class DirectoryDataCache:
                 subdirectory.ParseFromString(data)
                 for name in dir_digest_to_names[key]:
                     subdirs[name] = self.fetch_directory_data(
-                        subdir_digest, subdirectory, with_cache
+                        subdir_digest, subdirectory
                     )
         for n in sorted(subdirs):
             d = subdirs[n]
@@ -229,7 +233,9 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
     ):
         self._cache_dir_root = cache_root
         self._cas_helper = cas_helper
-        self._directory_data_cache = DirectoryDataCache(self._cas_helper, 5000)
+        self._directory_data_cache = DirectoryDataCache(
+            self._cas_helper, meter, 5000
+        )
         self._filesystem = filesystem
         self._large_directory = set(["engine", "external"])
         if skip_cache is None:
@@ -283,7 +289,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
         self, input_root_digest: Digest, input_root: Directory, target_dir: str
     ) -> None:
         dir_data = self._directory_data_cache.fetch_directory_data(
-            input_root_digest, input_root, True
+            input_root_digest, input_root
         )
         self._build_toplevel(
             dir_data,
@@ -419,7 +425,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
 
         # TODO: do in thread.
         for name in dir_need_to_evict:
-            self._meter.count("evict_cached_directory")
+            self._meter.count("evict_cached_dir")
             self._remove_cached_dir(name)
 
         for f in concurrent.futures.as_completed(build_native_futures):
@@ -734,6 +740,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
     def _remove_cached_dir(self, name_in_cache: str):
         path_in_cache = os.path.join(self._cache_dir_root, name_in_cache)
         print("remove cached directory:", path_in_cache)
+        self._meter.count("remove_cached_dir")
         with self._dir_lock.lock(path_in_cache):
             if os.path.exists(path_in_cache):
                 if self._copy_from_filesystem:
