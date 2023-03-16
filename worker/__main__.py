@@ -28,8 +28,10 @@ def main():
 
             signal.signal(signal.SIGINT, lambda s, f: graceful_shutdown())
             signal.signal(signal.SIGTERM, lambda s, f: graceful_shutdown())
+            signal.signal(signal.SIGBREAK, lambda s, f: graceful_shutdown())
             filesystem = LocalHardlinkFilesystem("tmp/cache")
-            for i in range(5):
+            filesystem.init()
+            for i in range(1):
                 thread_main = WorkerThreadMain(
                     channel, cas_channel, filesystem, i
                 )
