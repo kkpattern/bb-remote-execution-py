@@ -588,8 +588,9 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             sub_future.add_done_callback(
                 functools.partial(_subdir_build_callback, each_name)
             )
-        if not subdir_check:
-            _set_result()
+        with subdir_check_lock:
+            if not subdir_check:
+                _set_result()
 
     def _remove_large_directory(self, target: str):
         for name in os.listdir(target):
