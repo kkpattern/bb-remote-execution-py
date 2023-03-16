@@ -2,7 +2,7 @@ import threading
 import time
 
 from remoteworker.remoteworker_pb2 import CurrentState
-from worker.state import ThreadWorkerState
+from bbworker.state import ThreadWorkerState
 
 
 IDLE = 1

@@ -2,7 +2,7 @@ import concurrent.futures
 import random
 import time
 
-from worker.lock import VariableLock
+from bbworker.lock import VariableLock
 
 
 class _Expected(Exception):

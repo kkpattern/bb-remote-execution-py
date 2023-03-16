@@ -1,4 +1,4 @@
-from worker.cas import CASCache
+from bbworker.cas import CASCache
 
 
 def test_cas_cache(mock_cas_helper):
