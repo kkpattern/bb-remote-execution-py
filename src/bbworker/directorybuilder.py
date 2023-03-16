@@ -270,7 +270,6 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
         self._cached_dir.clear()
         self._pending_cached_dir.clear()
         self._current_size_bytes = 0
-        # TODO: shrink size.
         self._verify_existing_dirs()
 
     def build(
@@ -580,6 +579,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
 
         for each_name, subdirectory in directory.directories():
             subdir_check[each_name] = None
+        for each_name, subdirectory in directory.directories():
             sub_future = self._build_native_in_thread(
                 subdirectory,
                 os.path.join(directory_local, each_name),
@@ -620,6 +620,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                 dir_to_verify.append(
                     (name, Digest(hash=hash_, size_bytes=size_bytes))
                 )
+        dir_atime = {}
         if dir_to_verify:
             verify_thread_count = 10
             mapped_digests = [
@@ -632,40 +633,60 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                     self._executor.submit(self._verify_thread, part)
                 )
             for future in future_list:
-                future.result()
-        for dir_data in self._cached_dir.values():
-            # TODO: link size
-            self._current_size_bytes += dir_data.copy_size_bytes
+                dir_atime.update(future.result())
+        dirs_to_evict = []
+        for name in sorted(
+            dir_atime, key=lambda k: dir_atime[k], reverse=True
+        ):
+            dir_data = self._cached_dir[name]
+            size_bytes, file_count = self._calculate_required_size(
+                dir_data, self._file_count
+            )
+            if (
+                size_bytes + self._current_size_bytes
+                > self._max_cache_size_bytes
+                > 0
+            ):
+                dirs_to_evict.append(name)
+            else:
+                self._current_size_bytes += size_bytes
+                self._file_count = file_count
+        for name in dirs_to_evict:
+            self._remove_cached_dir(name)
         print("INFO: verify directory end.")
 
     def _verify_thread(
         self, directory_to_verify: typing.Iterable[typing.Tuple[str, Digest]]
     ):
+        dir_atime = {}
         for name, check_digest in directory_to_verify:
             p = os.path.join(self._cache_dir_root, name)
             try:
-                dir_data = self._calculate_dir_digest(p)
+                dir_data, atime = self._calculate_dir_digest(p)
                 if dir_data is None:
                     self._remove_cached_dir(name)
                 elif dir_data.checksum_digest != check_digest:
                     self._remove_cached_dir(name)
                 else:
                     self._cached_dir[name] = dir_data
+                    dir_atime[name] = atime
             except Exception:
                 self._remove_cached_dir(name)
+        return dir_atime
 
     def _calculate_dir_digest(
         self, dir_path: str
-    ) -> typing.Optional[DirectoryData]:
+    ) -> typing.Tuple[typing.Optional[DirectoryData], float]:
+        atime = 0.0
         if os.stat(dir_path).st_mode & stat.S_IWUSR:
-            return None
+            return None, atime
         checksum_message = Directory()
         files: typing.Dict[str, FileData] = {}
         subdirs: typing.Dict[str, DirectoryData] = {}
         for name in sorted(os.listdir(dir_path)):
             p = os.path.join(dir_path, name)
             if os.stat(p).st_mode & stat.S_IWUSR:
-                return None
+                return None, atime
             if os.path.isfile(p):
                 size_bytes = os.path.getsize(p)
                 sha256 = hashlib.sha256()
@@ -675,14 +696,19 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                         if f.tell() == size_bytes:
                             break
                 d = Digest(hash=sha256.hexdigest(), size_bytes=size_bytes)
-                is_executable = bool(os.stat(p).st_mode & stat.S_IXUSR)
+                stat_result = os.stat(p)
+                is_executable = bool(stat_result.st_mode & stat.S_IXUSR)
                 fd = FileData(d, is_executable)
                 files[name] = fd
                 checksum_message.files.append(fd.to_file_node(name))
+                if stat_result.st_atime > atime:
+                    atime = stat_result.st_atime
             elif os.path.isdir(p):
-                subdir_data = self._calculate_dir_digest(p)
+                subdir_data, subdir_atime = self._calculate_dir_digest(p)
                 if subdir_data is None:
-                    return None
+                    return None, atime
+                if subdir_atime > atime:
+                    atime = subdir_atime
                 subdirs[name] = subdir_data
                 checksum_message.directories.append(
                     DirectoryNode(
@@ -690,13 +716,13 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
                     )
                 )
             else:
-                return None
+                return None, atime
         checksum_data = checksum_message.SerializeToString(deterministic=True)
         checksum_digest = Digest(
             hash=hashlib.sha256(checksum_data).hexdigest(),
             size_bytes=len(checksum_data),
         )
-        return DirectoryData(checksum_digest, files, subdirs)
+        return DirectoryData(checksum_digest, files, subdirs), atime
 
     def _remove_cached_dir(self, name_in_cache: str):
         path_in_cache = os.path.join(self._cache_dir_root, name_in_cache)
