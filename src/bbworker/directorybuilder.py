@@ -200,7 +200,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             key = (digest.hash, digest.size_bytes)
             dir_digest_to_fetch[key] = digest
             dir_digest_to_names[key].append(dn.name)
-        for digest, offset, data in self._directory_blob_cache.fetch_all(
+        for digest, offset, data in self._directory_blob_cache.fetch_all_block(
             dir_digest_to_fetch.values()
         ):
             key = (digest.hash, digest.size_bytes)
@@ -286,7 +286,7 @@ class SharedTopLevelCachedDirectoryBuilder(IDirectoryBuilder):
             dir_digest_to_fetch[key] = dir_digest
             dir_digest_to_names[key].append(dir_node.name)
         subdir_check_node = []
-        for digest, offset, data in self._directory_blob_cache.fetch_all(
+        for digest, offset, data in self._directory_blob_cache.fetch_all_block(
             dir_digest_to_fetch.values()
         ):
             key = (digest.hash, digest.size_bytes)
