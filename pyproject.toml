@@ -1,0 +1,22 @@
+[project]
+name = "py-bb-worker"
+version = "0.0.1"
+dependencies = [
+  'grpcio>=1.50.0,<2.0.0',
+  'protobuf>=4.21.9,<5.0.0',
+]
+
+[project.optional-dependencies]
+test = [
+  'pytest>=7.2.0,<8.0.0',
+]
+dev = [
+  'flake8>=6.0.0,<7.0.0',
+]
+
+[tool.setuptools]
+packages = []
+
+[tool.black]
+line-length = 79
+target-version = ['py310']
