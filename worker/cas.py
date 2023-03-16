@@ -73,7 +73,7 @@ class FileProvider(object):
     def digest(self):
         if self._digest is None:
             sha256 = hashlib.sha256()
-            for data in self.read(10 * 1024 * 1024):
+            for data in self.read(3 * 1024 * 1024):
                 sha256.update(data)
             self._digest = sha256.hexdigest()
         return self._digest
@@ -105,7 +105,7 @@ class CASHelper(object):
         self,
         cas_stub: ContentAddressableStorageStub,
         cas_byte_stream_stub: ByteStreamStub,
-        msg_size_bytes_limit: int = 10 * 1024 * 1024,
+        msg_size_bytes_limit: int = 3 * 1024 * 1024,
     ):
         self._cas_stub = cas_stub
         self._byte_steam_stub = cas_byte_stream_stub
