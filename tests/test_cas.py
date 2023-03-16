@@ -45,13 +45,13 @@ class TestBytesProvider:
 def test_cas_cache(mock_cas_helper):
     digest = mock_cas_helper.append_digest_data(b"abced")
     cas_cache = CASCache(mock_cas_helper)
-    for d, offset, data in cas_cache.fetch_all([digest]):
+    for d, offset, data in cas_cache.fetch_all_block([digest]):
         assert data == b"abced"
         assert offset == 0
         assert digest == d
     assert len(mock_cas_helper.call_history) == 1
     mock_cas_helper.clear_call_history()
-    for d, offset, data in cas_cache.fetch_all([digest]):
+    for d, offset, data in cas_cache.fetch_all_block([digest]):
         assert data == b"abced"
         assert offset == 0
         assert digest == d
@@ -72,7 +72,7 @@ def test_cas_cache_without_limit(mock_cas_helper):
         digest_list.append(mock_cas_helper.append_digest_data(data))
     cas_cache = CASCache(mock_cas_helper)
     for i, each_digest in enumerate(digest_list):
-        for d, offset, data in cas_cache.fetch_all([each_digest]):
+        for d, offset, data in cas_cache.fetch_all_block([each_digest]):
             assert data == data_list[i]
             assert offset == 0
             assert d.hash == each_digest.hash
@@ -81,7 +81,7 @@ def test_cas_cache_without_limit(mock_cas_helper):
     mock_cas_helper.clear_call_history()
     # all data should be in cache.
     for i, each_digest in enumerate(digest_list):
-        for d, offset, data in cas_cache.fetch_all([each_digest]):
+        for d, offset, data in cas_cache.fetch_all_block([each_digest]):
             assert data == data_list[i]
             assert offset == 0
             assert d.hash == each_digest.hash
@@ -102,7 +102,7 @@ def test_cas_cache_cannot_fit_in(mock_cas_helper):
         digest_list.append(mock_cas_helper.append_digest_data(data))
     cas_cache = CASCache(mock_cas_helper, max_size_bytes=1)
     for i, each_digest in enumerate(digest_list):
-        for d, offset, data in cas_cache.fetch_all([each_digest]):
+        for d, offset, data in cas_cache.fetch_all_block([each_digest]):
             assert data == data_list[i]
             assert offset == 0
             assert d.hash == each_digest.hash
@@ -111,7 +111,7 @@ def test_cas_cache_cannot_fit_in(mock_cas_helper):
     mock_cas_helper.clear_call_history()
     # all data should not be in cache.
     for i, each_digest in enumerate(digest_list):
-        for d, offset, data in cas_cache.fetch_all([each_digest]):
+        for d, offset, data in cas_cache.fetch_all_block([each_digest]):
             assert data == data_list[i]
             assert offset == 0
             assert d.hash == each_digest.hash
@@ -131,7 +131,7 @@ def test_cas_cache_lru(mock_cas_helper):
 
     def try_fetch(index: int):
         try_digest, try_data = digest_list[index], data_list[index]
-        for d, offset, data in cas_cache.fetch_all([try_digest]):
+        for d, offset, data in cas_cache.fetch_all_block([try_digest]):
             assert data == try_data
             assert offset == 0
             assert d.hash == try_digest.hash
