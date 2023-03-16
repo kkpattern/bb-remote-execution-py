@@ -37,6 +37,7 @@ from .cas import FileProvider
 from .cas import BatchReadBlobsError
 
 from .directorybuilder import IDirectoryBuilder
+from .metrics import MeterBase
 from .util import setup_xcode_env
 
 
@@ -83,6 +84,7 @@ def prepare_output_dirs(command: Command, root: str) -> None:
 
 
 def execute_command(
+    meter: MeterBase,
     state_queue: queue.Queue,
     build_directory_builder: IDirectoryBuilder,
     build_directory: str,
@@ -101,9 +103,10 @@ def execute_command(
         )
     )
     try:
-        build_directory_builder.build(
-            input_root_digest, input_root, build_directory
-        )
+        with meter.record_duration("build_directory_seconds"):
+            build_directory_builder.build(
+                input_root_digest, input_root, build_directory
+            )
     except BatchReadBlobsError as e:
         status = Status(code=grpc.StatusCode.FAILED_PRECONDITION.value[0])
         if e.digests:
@@ -247,6 +250,7 @@ class RunnerThread(threading.Thread):
         build_directory: str,
         current_state_queue: "queue.Queue[CurrentState]",
         desired_state_queue: "queue.Queue[DesiredState]",
+        meter: MeterBase,
     ):
         super().__init__()
         self._cas_stub = cas_stub
@@ -256,6 +260,7 @@ class RunnerThread(threading.Thread):
         self._build_directory = build_directory
         self._current_state_queue = current_state_queue
         self._desired_state_queue = desired_state_queue
+        self._meter = meter
         self._stop_event = threading.Event()
 
     def notify_stop(self):
@@ -296,6 +301,7 @@ class RunnerThread(threading.Thread):
                 )
                 if command and input_root:
                     response = execute_command(
+                        self._meter,
                         self._current_state_queue,
                         self._build_directory_builder,
                         self._build_directory,

@@ -13,6 +13,7 @@ import yaml
 from .cas import CASHelper
 from .config import Config
 from .directorybuilder import SharedTopLevelCachedDirectoryBuilder
+from .metrics import MeterBase
 from .filesystem import LocalHardlinkFilesystem
 from .thread import WorkerThreadMain
 
@@ -44,6 +45,22 @@ def main():
             config.sentry.address,
             traces_sample_rate=config.sentry.traces_sample_rate,
         )
+
+    meter: MeterBase
+    if config.open_telemetry:
+        from prometheus_client import start_http_server
+        from .metrics import create_meter
+
+        start_http_server(
+            addr=config.open_telemetry.http_host,
+            port=config.open_telemetry.http_port,
+        )
+
+        meter = create_meter()
+    else:
+        from .metrics import create_dummy_meter
+
+        meter = create_dummy_meter()
 
     with (
         grpc.insecure_channel(
@@ -77,6 +94,7 @@ def main():
         fsconfig = config.filesystem
         filesystem = LocalHardlinkFilesystem(
             fsconfig.cache_root,
+            meter,
             max_cache_size_bytes=fsconfig.max_cache_size_bytes,
             concurrency=fsconfig.concurrency,
             download_batch_size_bytes=fsconfig.download_batch_size_bytes,
@@ -92,6 +110,7 @@ def main():
             builder_config.cache_root,
             cas_helper,
             filesystem,
+            meter,
             max_cache_size_bytes=builder_config.max_cache_size_bytes,
             concurrency=builder_config.concurrency,
         )
@@ -106,6 +125,7 @@ def main():
                 directory_builder,
                 config.build_root,
                 i,
+                meter,
             )
             thread_main.start()
             worker_threads.append(thread_main)
