@@ -1167,7 +1167,7 @@ class TestSharedTopLevelCachedDirectoryBuilder(object):
                 dir_data = {}
                 for j in range(5):
                     dir_data[f"dir_{i}_{j}"] = {
-                        f"file_{i}_{j}_x": b"xxx" * (i + j + 1)
+                        f"file_{i}_{j}_x": b"xxx" * (i + j)
                     }
                 input_root_data_list.append(dir_data)
             input_root_digest_list = [
