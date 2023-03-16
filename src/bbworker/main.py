@@ -38,11 +38,18 @@ class WorkerMain:
             sys.exit(1)
 
         if config.sentry:
+            import importlib.metadata
             import sentry_sdk
+
+            try:
+                bbworker_version = importlib.metadata.version("bbworker")
+            except importlib.metadata.PackageNotFoundError:
+                bbworker_version = "unknown"
 
             sentry_sdk.init(
                 config.sentry.address,
                 traces_sample_rate=config.sentry.traces_sample_rate,
+                release=f"bbworker@{bbworker_version}",
             )
 
         meter: MeterBase
