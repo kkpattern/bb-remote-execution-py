@@ -81,6 +81,7 @@ def main():
             config.build_directory_builder.cache_root,
             cas_helper,
             filesystem,
+            concurrency=config.build_directory_builder.concurrency,
         )
         directory_builder.init()
         for i in range(config.concurrency):
