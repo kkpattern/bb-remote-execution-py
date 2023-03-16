@@ -19,27 +19,19 @@ class VariableLock(object):
 
         """
         while True:
-            if var in self._var_locks:
-                lock = self._var_locks[var]
-                lock.acquire()
-                if self._var_locks.get(var, None) is not lock:
-                    # the lock is released by another thread. release it and
-                    # retry.
-                    lock.release()
-                    continue
+            with self._global_lock:
+                if var not in self._var_locks:
+                    # we're the first one to create the lock.
+                    lock = threading.Lock()
+                    self._var_locks[var] = lock
                 else:
-                    break
+                    lock = self._var_locks[var]
+            lock.acquire()
+            if self._var_locks.get(var, None) is lock:
+                break
             else:
-                with self._global_lock:
-                    if var not in self._var_locks:
-                        # we're the first one to create the lock.
-                        lock = threading.Lock()
-                        lock.acquire()
-                        self._var_locks[var] = lock
-                        break
-                    else:
-                        # someone created the lock before us, retry.
-                        continue
+                # lock has been removed by others, retry.
+                lock.release()
         return lock
 
     def remove_lock(

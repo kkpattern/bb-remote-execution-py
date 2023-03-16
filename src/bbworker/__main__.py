@@ -64,7 +64,13 @@ def main():
         if sys.platform == "win32":
             signal.signal(signal.SIGBREAK, lambda s, f: graceful_shutdown())
 
-        filesystem = LocalHardlinkFilesystem(config.filesystem.cache_root)
+        fsconfig = config.filesystem
+        filesystem = LocalHardlinkFilesystem(
+            fsconfig.cache_root,
+            max_cache_size_bytes=fsconfig.max_cache_size_bytes,
+            concurrency=fsconfig.concurrency,
+            download_batch_size_bytes=fsconfig.download_batch_size_bytes,
+        )
         filesystem.init()
 
         cas_stub = ContentAddressableStorageStub(cas_channel)
