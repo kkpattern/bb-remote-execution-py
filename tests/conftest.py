@@ -65,3 +65,23 @@ class MockCASHelper(object):
 @pytest.fixture
 def mock_cas_helper():
     return MockCASHelper()
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "only_in_full_test: skip this test unless --full is provided",
+    )
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--full", action="store_true", help="run full test. will be slow"
+    )
+
+
+def pytest_runtest_setup(item):
+    if "only_in_full_test" in item.keywords and not item.config.getoption(
+        "--full"
+    ):
+        pytest.skip("this test will only run in full mode")
