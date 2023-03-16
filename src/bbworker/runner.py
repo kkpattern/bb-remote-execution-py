@@ -108,6 +108,7 @@ def execute_command(
                 input_root_digest, input_root, build_directory
             )
     except BatchReadBlobsError as e:
+        meter.count("failed_precondition")
         status = Status(code=grpc.StatusCode.FAILED_PRECONDITION.value[0])
         if e.digests:
             violations = []
@@ -282,6 +283,7 @@ class RunnerThread(threading.Thread):
             # NOTE: ALWAYS set back at least one new current_state after get a
             # new state.
             if desired_state.WhichOneof("worker_state") == "executing":
+                self._meter.count("action")
                 action_digest = desired_state.executing.action_digest
                 # print(f"Action {action_digest.hash} started")
                 should_executing = desired_state.executing
