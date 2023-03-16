@@ -12,6 +12,9 @@ from .util import digest_to_key
 from .filesystem import LocalHardlinkFilesystem
 
 
+DIGEST_KEY = typing.Optional[typing.Tuple[str, int]]
+
+
 class DiffBasedBuildDirectoryBuilder(object):
     """A diff-based bazel action directory builder."""
 
@@ -24,8 +27,10 @@ class DiffBasedBuildDirectoryBuilder(object):
         self._root_local = root_local
         self._cas_helper = cas_helper
         self._filesystem = filesystem
-        self._current_root_digest = None
-        self._digest_to_directory = {}
+        self._current_root_digest: typing.Optional[Digest] = None
+        self._digest_to_directory: typing.Dict[
+            DIGEST_KEY, typing.Optional[Directory]
+        ] = {}
 
     @property
     def local_root(self):
