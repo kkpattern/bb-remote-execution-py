@@ -25,15 +25,96 @@ def digest_to_cache_name(digest: Digest):
     return "{0}_{1}".format(digest.hash, digest.size_bytes)
 
 
+class FilesystemError(Exception):
+    pass
+
+
+class MaxSizeReached(FilesystemError):
+    """But max cache size reached and we cannot make space either because a
+    single file is large then whole cache size or there are too many pending
+    files downloading.
+    """
+
+    pass
+
+
+class InvalidDigest(FilesystemError):
+    pass
+
+
+class DigestAndFileNodes(object):
+    def __init__(self, digest: Digest, file_nodes: typing.List[FileNode]):
+        self.digest = digest
+        self.file_nodes = file_nodes
+
+    def append_file_node(self, file_node: FileNode):
+        self.file_nodes.append(file_node)
+
+
+class DownloadBatch(object):
+    def __init__(
+        self,
+        batch: typing.Optional[typing.Iterable[DigestAndFileNodes]] = None,
+    ) -> None:
+        self._digest_and_file_nodes: typing.List[DigestAndFileNodes] = []
+        self._total_size_bytes = 0
+        self._finish_event = threading.Event()
+        if batch:
+            for d in batch:
+                self._digest_and_file_nodes.append(d)
+                self._total_size_bytes += d.digest.size_bytes
+
+    def __iter__(self):
+        for digest_and_file_nodes in self._digest_and_file_nodes:
+            yield digest_and_file_nodes
+
+    @property
+    def finish_event(self):
+        return self._finish_event
+
+    @property
+    def digests(self):
+        return [i.digest for i in self._digest_and_file_nodes]
+
+    @property
+    def total_size_bytes(self):
+        return self._total_size_bytes
+
+    def append_digest_and_file_nodes(
+        self, digest_and_file_nodes: DigestAndFileNodes
+    ):
+        self._digest_and_file_nodes.append(digest_and_file_nodes)
+        self._total_size_bytes += digest_and_file_nodes.digest.size_bytes
+
+
 class LocalHardlinkFilesystem(object):
     """基于hardlink的本地缓存文件系统."""
 
-    def __init__(self, cache_root_dir: str):
+    def __init__(
+        self,
+        cache_root_dir: str,
+        *,
+        max_cache_size_bytes: int = 0,
+        concurrency: int = 10,
+        download_batch_size_bytes: int = 3 * 1024 * 1024,
+    ):
         self._cache_root_dir = cache_root_dir
-        self._global_lock = threading.Lock()
-        self._download_lock = threading.Lock()
         self._file_lock = VariableLock()
-        self._file_cache_info: typing.Dict[str, FileCacheInfo] = {}
+        self._current_size_bytes = 0
+        self._max_cache_size_bytes = max_cache_size_bytes
+        self._download_batch_size_bytes = download_batch_size_bytes
+        self._cached_files: typing.Dict[
+            str, FileCacheInfo
+        ] = collections.OrderedDict()
+        self._pending_files: typing.Dict[str, threading.Event] = {}
+        self._global_lock = threading.Lock()
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            concurrency, thread_name_prefix="filesystem_"
+        )
+
+    @property
+    def current_size_bytes(self):
+        return self._current_size_bytes
 
     def init(self):
         if not os.path.exists(self._cache_root_dir):
@@ -41,7 +122,8 @@ class LocalHardlinkFilesystem(object):
         self._verify_existing_files()
 
     def _verify_existing_files(self) -> None:
-        self._file_cache_info.clear()
+        self._cached_files.clear()
+        self._current_size_bytes = 0
         file_to_verify: typing.List[str] = []
         for name in os.listdir(self._cache_root_dir):
             p = os.path.join(self._cache_root_dir, name)
@@ -55,20 +137,32 @@ class LocalHardlinkFilesystem(object):
                 file_to_verify[i::verify_thread_count]
                 for i in range(verify_thread_count)
             ]
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=verify_thread_count,
-                thread_name_prefix="verify_thread_",
-            ) as executor:
-                future_list = []
-                for part in mapped_digests:
-                    future_list.append(
-                        executor.submit(self._verify_thread, part)
-                    )
-                for f in future_list:
-                    self._file_cache_info.update(f.result())
-            for name in os.listdir(self._cache_root_dir):
-                if name not in self._file_cache_info:
-                    raise RuntimeError("Unverified file in cache root.")
+            cached_files = {}
+            future_list = []
+            for part in mapped_digests:
+                future_list.append(
+                    self._executor.submit(self._verify_thread, part)
+                )
+            for f in future_list:
+                cached_files.update(f.result())
+            files_to_evict: typing.List[str] = []
+            for name_in_cache in sorted(
+                cached_files,
+                key=lambda k: cached_files[k].st_atime,
+                reverse=True,
+            ):
+                cache_info = cached_files[name_in_cache]
+                new_size_bytes = cache_info.st_size + self._current_size_bytes
+                if new_size_bytes > self._max_cache_size_bytes > 0:
+                    files_to_evict.append(name_in_cache)
+                else:
+                    self._cached_files[name_in_cache] = cache_info
+                    self._current_size_bytes = new_size_bytes
+            for name_in_cache in files_to_evict:
+                path_in_cache = os.path.join(
+                    self._cache_root_dir, name_in_cache
+                )
+                unlink_readonly_file(path_in_cache)
 
     def _verify_thread(self, file_to_verify: typing.Iterable[str]):
         file_cache_info: typing.Dict[str, FileCacheInfo] = {}
@@ -76,6 +170,8 @@ class LocalHardlinkFilesystem(object):
             p = os.path.join(self._cache_root_dir, name)
             try:
                 hash_, size_bytes_str = name.split("_")
+                # we need get cache info first so we don't change the atime.
+                cache_info = FileCacheInfo(os.stat(p))
                 if os.stat(p).st_mode & stat.S_IWUSR:
                     unlink_readonly_file(p)
                 else:
@@ -94,7 +190,7 @@ class LocalHardlinkFilesystem(object):
                         if corrupted:
                             unlink_readonly_file(p)
                         else:
-                            file_cache_info[name] = FileCacheInfo(os.stat(p))
+                            file_cache_info[name] = cache_info
                     else:
                         unlink_readonly_file(p)
             except Exception:
@@ -112,17 +208,30 @@ class LocalHardlinkFilesystem(object):
         Return files not exists.
         """
         missing_files = []
+        cached_files = {}
+        with self._global_lock:
+            # copies cache info into cached_files so we don't need to lock
+            # the whole self._cached_files during linking.
+            for fnode in fnode_list:
+                name_in_cache = digest_to_cache_name(fnode.digest)
+                try:
+                    cached_files[name_in_cache] = self._cached_files[
+                        name_in_cache
+                    ]
+                except KeyError:
+                    pass
+        corrupted_files: typing.List[FileNode] = []
         for fnode in fnode_list:
             name_in_cache = digest_to_cache_name(fnode.digest)
             path_in_cache = os.path.join(self._cache_root_dir, name_in_cache)
             with self._file_lock.lock(path_in_cache):
                 if os.path.exists(path_in_cache):
-                    if name_in_cache not in self._file_cache_info:
+                    if name_in_cache not in cached_files:
                         corrupted = True
-                    elif not self._file_cache_info[name_in_cache].match(
+                    elif not cached_files[name_in_cache].match(
                         os.stat(path_in_cache)
                     ):
-                        del self._file_cache_info[name_in_cache]
+                        del cached_files[name_in_cache]
                         corrupted = True
                     else:
                         corrupted = False
@@ -135,66 +244,143 @@ class LocalHardlinkFilesystem(object):
                         else:
                             shutil.copy2(path_in_cache, target_path)
                     else:
-                        unlink_readonly_file(path_in_cache)
-                        missing_files.append(fnode)
+                        corrupted_files.append(fnode)
                 else:
                     missing_files.append(fnode)
+        with self._global_lock:
+            for fn in corrupted_files:
+                name_in_cache = digest_to_cache_name(fn.digest)
+                path_in_cache = os.path.join(
+                    self._cache_root_dir, name_in_cache
+                )
+                unlink_readonly_file(path_in_cache)
+                del self._cached_files[name_in_cache]
+                self._current_size_bytes -= fn.digest.size_bytes
+                missing_files.append(fn)
         return missing_files
 
-    def fetch_to(
-        self,
-        backend,
-        files: typing.Iterable[FileNode],
-        target_dir: str,
-        *,
-        copy_file: bool = False,
-    ):
-        """Fetch files into the target directory."""
-        missing_files = self._link_existing_files(
-            files, target_dir, copy_file=copy_file
+    def _download_missing_files(
+        self, backend, files: typing.Iterable[FileNode]
+    ) -> typing.Iterable[threading.Event]:
+        batch_size = self._download_batch_size_bytes
+        size_limited = self._max_cache_size_bytes > 0
+        max_cache_size_bytes = self._max_cache_size_bytes
+        available_cache_size_bytes = (
+            self._max_cache_size_bytes - self._current_size_bytes
         )
-        with self._download_lock:
-            real_download_list = self._link_existing_files(
-                missing_files, target_dir, copy_file=copy_file
-            )
-            if real_download_list:
-                self._batch_download(
-                    backend,
-                    real_download_list,
-                    target_dir,
-                    copy_file=copy_file,
+        download_events: typing.Set[threading.Event] = set()
+        # merge the files that have the same content.
+        merged_files: typing.Dict[str, DigestAndFileNodes] = {}
+        for fn in files:
+            if fn.digest.size_bytes <= 0:
+                raise InvalidDigest(
+                    f"digest has invalide size bytes {fn.digest.size_bytes}"
                 )
-        # check all files exist.
-        for f in files:
-            if not os.path.exists(os.path.join(target_dir, f.name)):
-                raise RuntimeError(
-                    "{0} doesn't exist.".format(
-                        os.path.join(target_dir, f.name)
-                    )
-                )
-
-    def _batch_download(
-        self,
-        backend,
-        files_to_download: typing.List[FileNode],
-        link_target_dir: str,
-        *,
-        copy_file: bool = False,
-    ):
-        """Batch download files and link them into link_target_dir."""
-        # NOTE: 注意一个相同的digest可能对应多个文件. 需要去重.
-        digest_to_fetch = {}
-        cache_name_to_files = collections.defaultdict(list)
-        for fn in files_to_download:
             name_in_cache = digest_to_cache_name(fn.digest)
-            cache_name_to_files[name_in_cache].append(fn)
-            digest_to_fetch[name_in_cache] = fn.digest
+            if name_in_cache in merged_files:
+                merged_files[name_in_cache].append_file_node(fn)
+            else:
+                merged_files[name_in_cache] = DigestAndFileNodes(
+                    fn.digest, [fn]
+                )
+        with self._global_lock:
+            # calculate which files we need to download. which files we need
+            # to remove to make space.
+            required_size = 0
+            missing_files: typing.List[DigestAndFileNodes] = []
+            names_need_to_evict: typing.List[str] = []
+            for name_in_cache, digest_and_file_nodes in merged_files.items():
+                if name_in_cache in self._cached_files:
+                    continue
+                elif name_in_cache in self._pending_files:
+                    download_events.add(self._pending_files[name_in_cache])
+                    continue
+                else:
+                    missing_files.append(digest_and_file_nodes)
+                    size_bytes = digest_and_file_nodes.digest.size_bytes
+                    if size_bytes > max_cache_size_bytes > 0:
+                        raise MaxSizeReached
+                    required_size += size_bytes
+            if size_limited and required_size > available_cache_size_bytes:
+                for name_in_cache in self._cached_files:
+                    names_need_to_evict.append(name_in_cache)
+                    cache_info = self._cached_files[name_in_cache]
+                    required_size -= cache_info.st_size
+                    if required_size <= available_cache_size_bytes:
+                        break
+                if required_size > available_cache_size_bytes:
+                    raise MaxSizeReached
+            for name in names_need_to_evict:
+                cache_info = self._cached_files.pop(name)
+                self._current_size_bytes -= cache_info.st_size
+            # split missing files to batches to download.
+            batch = DownloadBatch()
+            batch_list: typing.List[DownloadBatch] = [batch]
+            for digest_and_file_nodes in missing_files:
+                size_bytes = digest_and_file_nodes.digest.size_bytes
+                if size_bytes > batch_size:
+                    batch_for_digest = DownloadBatch([digest_and_file_nodes])
+                    batch_list.append(batch_for_digest)
+                elif size_bytes + batch.total_size_bytes > batch_size:
+                    batch = DownloadBatch([digest_and_file_nodes])
+                    batch_for_digest = batch
+                    batch_list.append(batch)
+                else:
+                    batch_for_digest = batch
+                    batch.append_digest_and_file_nodes(digest_and_file_nodes)
+                name_in_cache = digest_to_cache_name(
+                    digest_and_file_nodes.digest
+                )
+                finish_event = batch_for_digest.finish_event
+                self._pending_files[name_in_cache] = finish_event
+                download_events.add(finish_event)
+                self._current_size_bytes += (
+                    digest_and_file_nodes.digest.size_bytes
+                )
+        # remove evicted files first so we have enough space to download new
+        # files.
+        for name_in_cache in names_need_to_evict:
+            path_in_cache = os.path.join(self._cache_root_dir, name_in_cache)
+            with self._file_lock.lock(path_in_cache):
+                if os.path.exists(path_in_cache):
+                    unlink_readonly_file(path_in_cache)
+        for batch in batch_list:
+            if batch.total_size_bytes > 0:
+                self._executor.submit(self._download_thread, backend, batch)
+        return download_events
+
+    def _download_thread(self, backend, batch: DownloadBatch):
+        try:
+            self._download_thread_inner(backend, batch)
+        finally:
+            try:
+                with self._global_lock:
+                    for digest_and_file_nodes in batch:
+                        digest = digest_and_file_nodes.digest
+                        name_in_cache = digest_to_cache_name(digest)
+                        path_in_cache = os.path.join(
+                            self._cache_root_dir, name_in_cache
+                        )
+                        if os.path.exists(path_in_cache):
+                            path_in_cache = os.path.join(
+                                self._cache_root_dir, name_in_cache
+                            )
+                            file_stat = os.stat(path_in_cache)
+                            self._cached_files[name_in_cache] = FileCacheInfo(
+                                file_stat
+                            )
+                        else:
+                            # download failed. return the reserved size bytes.
+                            self._current_size_bytes -= digest.size_bytes
+                        del self._pending_files[name_in_cache]
+            finally:
+                batch.finish_event.set()
+
+    def _download_thread_inner(self, backend, batch: DownloadBatch):
         file_opened: typing.Dict[str, io.BufferedWriter] = {}
         file_sha256: typing.Dict[str, hashlib._Hash] = {}
         try:
-            for digest, offset, data in backend.fetch_all(
-                digest_to_fetch.values()
-            ):
+            for digest, offset, data in backend.fetch_all(batch.digests):
                 name_in_cache = digest_to_cache_name(digest)
                 # We need to download into a temp path. Only the file is
                 # downloaded and verify then we can move it to cache root.
@@ -232,9 +418,10 @@ class LocalHardlinkFilesystem(object):
                 file.close()
             file_opened.clear()
         # set mode.
-        for name_in_cache, files in cache_name_to_files.items():
+        for digest_and_file_nodes in batch:
+            name_in_cache = digest_to_cache_name(digest_and_file_nodes.digest)
             executable = False
-            for fn in files:
+            for fn in digest_and_file_nodes.file_nodes:
                 if fn.is_executable:
                     executable = True
                     break
@@ -242,16 +429,27 @@ class LocalHardlinkFilesystem(object):
             path_in_temp = path_in_cache + ".tmp"
             with self._file_lock.lock(path_in_cache):
                 if os.path.exists(path_in_cache):
+                    # TODO: unlink instead?
                     raise RuntimeError(f"{path_in_cache} shouldn't exist")
                 os.rename(path_in_temp, path_in_cache)
                 if executable:
                     set_read_exec_only(path_in_cache)
                 else:
                     set_read_only(path_in_cache)
-                self._file_cache_info[name_in_cache] = FileCacheInfo(
-                    os.stat(path_in_cache)
-                )
-        missing_files = self._link_existing_files(
-            files_to_download, link_target_dir, copy_file=copy_file
-        )
-        assert not missing_files
+
+    def fetch_to(
+        self,
+        backend,
+        files: typing.Iterable[FileNode],
+        target_dir: str,
+        *,
+        copy_file: bool = False,
+    ):
+        """Fetch files into the target directory."""
+        while files:
+            download_events = self._download_missing_files(backend, files)
+            for e in download_events:
+                e.wait()
+            files = self._link_existing_files(
+                files, target_dir, copy_file=copy_file
+            )
