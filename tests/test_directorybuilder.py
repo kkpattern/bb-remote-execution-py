@@ -90,6 +90,10 @@ class TestSharedTopLevelCachedDirectoryBuilder(object):
             builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="executable has no meaning on Windows.",
+    )
     def test_basic_build_executable(self, mock_cas_helper):
         with (
             tempfile.TemporaryDirectory() as filesystem_root,
