@@ -1,10 +1,6 @@
-import asyncio
 import concurrent.futures
 import random
 import time
-import threading
-
-import pytest
 
 from worker.lock import VariableLock
 

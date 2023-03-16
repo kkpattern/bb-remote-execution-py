@@ -56,7 +56,7 @@ if sys.platform == "win32":
                 with tempfile.TemporaryDirectory() as tmp_dir:
                     tmp_p = os.path.join(tmp_dir, os.path.basename(source))
                     shutil.copy2(source, tmp_p)
-                    unlink_file(source)
+                    unlink_readonly_file(source)
                     shutil.copy2(tmp_p, source)
                     os.link(source, target)
 
