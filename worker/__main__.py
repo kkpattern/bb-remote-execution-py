@@ -1,4 +1,5 @@
 import signal
+import sys
 
 import grpc
 
@@ -36,7 +37,8 @@ def main():
 
         signal.signal(signal.SIGINT, lambda s, f: graceful_shutdown())
         signal.signal(signal.SIGTERM, lambda s, f: graceful_shutdown())
-        signal.signal(signal.SIGBREAK, lambda s, f: graceful_shutdown())
+        if sys.platform == "win32":
+            signal.signal(signal.SIGBREAK, lambda s, f: graceful_shutdown())
         filesystem = LocalHardlinkFilesystem("tmp/cache")
         filesystem.init()
         for i in range(10):
