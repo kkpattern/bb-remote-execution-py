@@ -12,6 +12,7 @@ import pytest
 
 from bbworker.filesystem import LocalHardlinkFilesystem
 from bbworker.filesystem import MaxSizeReached
+from bbworker.metrics import create_dummy_meter
 from bbworker.util import set_read_only
 from bbworker.util import unlink_readonly_file
 
@@ -35,13 +36,14 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
-            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            meter = create_dummy_meter()
+            filesystem = LocalHardlinkFilesystem(filesystem_root, meter)
             filesystem.init()
             filesystem.fetch_to(
                 mock_cas_helper, [i[0] for i in test_file_list], target_root
             )
             # simulate process restart.
-            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem = LocalHardlinkFilesystem(filesystem_root, meter)
             filesystem.init()
             for fnode, data in test_file_list:
                 digest = fnode.digest
@@ -66,7 +68,8 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
-            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            meter = create_dummy_meter()
+            filesystem = LocalHardlinkFilesystem(filesystem_root, meter)
             filesystem.init()
             filesystem.fetch_to(
                 mock_cas_helper, [i[0] for i in test_file_list], target_root
@@ -74,7 +77,7 @@ class TestLocalHardlinkFilesystem(object):
             path_in_target = os.path.join(target_root, "file_1")
             os.chmod(path_in_target, stat.S_IWRITE)
             # simulate process restart.
-            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem = LocalHardlinkFilesystem(filesystem_root, meter)
             filesystem.init()
             removed_fnode, _ = test_file_list.pop(0)
             removed_digest = removed_fnode.digest
@@ -107,7 +110,8 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
-            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            meter = create_dummy_meter()
+            filesystem = LocalHardlinkFilesystem(filesystem_root, meter)
             filesystem.init()
             filesystem.fetch_to(
                 mock_cas_helper, [i[0] for i in test_file_list], target_root
@@ -118,7 +122,7 @@ class TestLocalHardlinkFilesystem(object):
                 f.write(b"changeddata")
             set_read_only(path_in_target)
             # simulate process restart.
-            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem = LocalHardlinkFilesystem(filesystem_root, meter)
             filesystem.init()
             removed_fnode, _ = test_file_list.pop(0)
             removed_digest = removed_fnode.digest
@@ -153,7 +157,8 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
-            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            meter = create_dummy_meter()
+            filesystem = LocalHardlinkFilesystem(filesystem_root, meter)
             filesystem.init()
             filesystem.fetch_to(
                 mock_cas_helper, [i[0] for i in test_file_list], target_root
@@ -164,7 +169,7 @@ class TestLocalHardlinkFilesystem(object):
                 f.write(b"testacdef")
             set_read_only(path_in_target)
             # simulate process restart.
-            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem = LocalHardlinkFilesystem(filesystem_root, meter)
             filesystem.init()
             removed_fnode, _ = test_file_list.pop(0)
             removed_digest = removed_fnode.digest
@@ -199,7 +204,8 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
-            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            meter = create_dummy_meter()
+            filesystem = LocalHardlinkFilesystem(filesystem_root, meter)
             filesystem.init()
             filesystem.fetch_to(
                 mock_cas_helper, [i[0] for i in test_file_list], target_root
@@ -211,7 +217,7 @@ class TestLocalHardlinkFilesystem(object):
                 f.write(b"y" * 10 * 1024 * 1024)
             set_read_only(path_in_target)
             # simulate process restart.
-            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem = LocalHardlinkFilesystem(filesystem_root, meter)
             filesystem.init()
             removed_fnode, _ = test_file_list.pop(0)
             removed_digest = removed_fnode.digest
@@ -250,7 +256,8 @@ class TestLocalHardlinkFilesystem(object):
                     (mock_cas_helper.append_file(name, data), data)
                 )
 
-            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            meter = create_dummy_meter()
+            filesystem = LocalHardlinkFilesystem(filesystem_root, meter)
             filesystem.init()
 
             def _thread_run():
@@ -295,8 +302,9 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
+            meter = create_dummy_meter()
             filesystem = LocalHardlinkFilesystem(
-                filesystem_root, max_cache_size_bytes=300
+                filesystem_root, meter, max_cache_size_bytes=300
             )
             filesystem.init()
             filesystem.fetch_to(
@@ -323,8 +331,9 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
+            meter = create_dummy_meter()
             filesystem = LocalHardlinkFilesystem(
-                filesystem_root, max_cache_size_bytes=30
+                filesystem_root, meter, max_cache_size_bytes=30
             )
             filesystem.init()
             with pytest.raises(MaxSizeReached):
@@ -348,8 +357,10 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
+            meter = create_dummy_meter()
             filesystem = LocalHardlinkFilesystem(
                 filesystem_root,
+                meter,
                 max_cache_size_bytes=249,
             )
             filesystem.init()
@@ -373,8 +384,10 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
+            meter = create_dummy_meter()
             filesystem = LocalHardlinkFilesystem(
                 filesystem_root,
+                meter,
                 max_cache_size_bytes=100,
             )
             filesystem.init()
@@ -405,8 +418,10 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
+            meter = create_dummy_meter()
             filesystem = LocalHardlinkFilesystem(
                 filesystem_root,
+                meter,
                 max_cache_size_bytes=300,
             )
             filesystem.init()
@@ -461,8 +476,10 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
+            meter = create_dummy_meter()
             filesystem = LocalHardlinkFilesystem(
                 filesystem_root,
+                meter,
                 max_cache_size_bytes=420,
             )
             filesystem.init()
@@ -512,8 +529,10 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
+            meter = create_dummy_meter()
             filesystem = LocalHardlinkFilesystem(
                 filesystem_root,
+                meter,
                 max_cache_size_bytes=30,
             )
             filesystem.init()
@@ -551,8 +570,10 @@ class TestLocalHardlinkFilesystem(object):
                     test_file_list.append(
                         (mock_cas_helper.append_file(name, data), data)
                     )
+                meter = create_dummy_meter()
                 filesystem = LocalHardlinkFilesystem(
                     filesystem_root,
+                    meter,
                     max_cache_size_bytes=800,
                 )
                 filesystem.init()
@@ -574,7 +595,7 @@ class TestLocalHardlinkFilesystem(object):
                     time.sleep(0.1)  # make sure atime different.
                     os.utime(os.path.join(target_root, name))
                 filesystem = LocalHardlinkFilesystem(
-                    filesystem_root, max_cache_size_bytes=300
+                    filesystem_root, meter, max_cache_size_bytes=300
                 )
                 filesystem.init()
                 for i in [1, 0, 2, 3, 6]:
@@ -610,8 +631,10 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
+            meter = create_dummy_meter()
             filesystem = LocalHardlinkFilesystem(
                 filesystem_root,
+                meter,
                 max_cache_size_bytes=300,
             )
             filesystem.init()
@@ -658,8 +681,10 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
+            meter = create_dummy_meter()
             filesystem = LocalHardlinkFilesystem(
                 filesystem_root,
+                meter,
                 max_cache_size_bytes=300,
             )
             filesystem.init()
@@ -702,8 +727,10 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
+            meter = create_dummy_meter()
             filesystem = LocalHardlinkFilesystem(
                 filesystem_root,
+                meter,
                 max_cache_size_bytes=45,
             )
             filesystem.init()
@@ -751,8 +778,10 @@ class TestLocalHardlinkFilesystem(object):
                     (mock_cas_helper.append_file(name, data), data)
                 )
             mock_cas_helper.set_data_exception(error_data, FakeIOError())
+            meter = create_dummy_meter()
             filesystem = LocalHardlinkFilesystem(
                 filesystem_root,
+                meter,
                 max_cache_size_bytes=45,
             )
             filesystem.init()
@@ -786,8 +815,9 @@ class TestLocalHardlinkFilesystem(object):
                 test_file_list.append(
                     (mock_cas_helper.append_file(name, data), data)
                 )
+            meter = create_dummy_meter()
             filesystem = LocalHardlinkFilesystem(
-                filesystem_root, max_cache_size_bytes=300
+                filesystem_root, meter, max_cache_size_bytes=300
             )
             filesystem.init()
             filesystem.fetch_to(

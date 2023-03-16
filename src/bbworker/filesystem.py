@@ -14,6 +14,7 @@ from build.bazel.remote.execution.v2.remote_execution_pb2 import FileNode
 
 from .cacheinfo import FileCacheInfo
 from .lock import VariableLock
+from .metrics import MeterBase
 from .util import set_read_only
 from .util import set_read_exec_only
 from .util import link_file
@@ -96,6 +97,7 @@ class LocalHardlinkFilesystem(object):
     def __init__(
         self,
         cache_root_dir: str,
+        meter: MeterBase,
         *,
         max_cache_size_bytes: int = 0,
         concurrency: int = 10,
@@ -114,6 +116,7 @@ class LocalHardlinkFilesystem(object):
         self._executor = concurrent.futures.ThreadPoolExecutor(
             concurrency, thread_name_prefix="filesystem_"
         )
+        self._meter = meter
 
     @property
     def current_size_bytes(self):
@@ -346,6 +349,7 @@ class LocalHardlinkFilesystem(object):
         # remove evicted files first so we have enough space to download new
         # files.
         for name_in_cache in names_need_to_evict:
+            self._meter.count("evict_cached_file")
             path_in_cache = os.path.join(self._cache_root_dir, name_in_cache)
             with self._file_lock.lock(path_in_cache):
                 if os.path.exists(path_in_cache):
