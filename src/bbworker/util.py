@@ -45,6 +45,14 @@ def set_read_exec_only(target: str):
     os.chmod(target, stat.S_IRUSR | stat.S_IXUSR)
 
 
+def set_dir_readonly_recursive(target: str):
+    for dir_, dirnames, filenames in os.walk(target):
+        for n in dirnames:
+            p = os.path.join(dir_, n)
+            os.chmod(p, stat.S_IRUSR | stat.S_IXUSR)
+    os.chmod(target, stat.S_IRUSR | stat.S_IXUSR)
+
+
 def set_read_exec_write(target: str):
     os.chmod(target, stat.S_IRUSR | stat.S_IXUSR | stat.S_IWUSR)
 

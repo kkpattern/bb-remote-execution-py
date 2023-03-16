@@ -17,6 +17,10 @@ from bbworker.util import unlink_readonly_file
 from bbworker.util import set_read_exec_write
 
 
+class FakeIOError(Exception):
+    pass
+
+
 def _assert_directory(
     dir_data,
     dir_path: str,
@@ -512,7 +516,6 @@ class TestSharedTopLevelCachedDirectoryBuilder(object):
             )
             builder.init()
             assert not sorted(os.listdir(cache_dir_root))
-            assert not sorted(os.listdir(builder.cache_digest_root))
             builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
             # Test file mode changed.
@@ -526,7 +529,6 @@ class TestSharedTopLevelCachedDirectoryBuilder(object):
             )
             builder.init()
             assert not sorted(os.listdir(cache_dir_root))
-            assert not sorted(os.listdir(builder.cache_digest_root))
             builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
 
@@ -578,7 +580,6 @@ class TestSharedTopLevelCachedDirectoryBuilder(object):
             )
             builder.init()
             assert not sorted(os.listdir(cache_dir_root))
-            assert not sorted(os.listdir(builder.cache_digest_root))
             builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
 
@@ -631,7 +632,6 @@ class TestSharedTopLevelCachedDirectoryBuilder(object):
             )
             builder.init()
             assert not sorted(os.listdir(cache_dir_root))
-            assert not sorted(os.listdir(builder.cache_digest_root))
             builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
 
@@ -725,9 +725,63 @@ class TestSharedTopLevelCachedDirectoryBuilder(object):
             )
             builder.init()
             assert not sorted(os.listdir(cache_dir_root))
-            assert not sorted(os.listdir(builder.cache_digest_root))
             builder.build(input_root_digest, input_root_directory, local_root)
             _assert_directory(input_root_data, local_root)
+
+    def test_in_cache_after_validation(self, mock_cas_helper):
+        with (
+            tempfile.TemporaryDirectory() as filesystem_root,
+            tempfile.TemporaryDirectory() as local_root,
+            tempfile.TemporaryDirectory() as cache_root,
+        ):
+            input_root_data_list = [
+                {
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                    },
+                },
+                {
+                    "dir_2": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"d" * 15,
+                    },
+                },
+            ]
+            input_root_digest_list = []
+            input_root_directory_list = []
+            for input_root_data in input_root_data_list:
+                digest = mock_cas_helper.append_directory(input_root_data)
+                input_root_digest_list.append(digest)
+                input_root_directory_list.append(
+                    mock_cas_helper.get_directory_by_digest(digest)
+                )
+            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem.init()
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
+            )
+            builder.init()
+            for i, d in enumerate(input_root_digest_list):
+                builder.build(d, input_root_directory_list[i], local_root)
+                _assert_directory(input_root_data_list[i], local_root)
+            # remove file content remove cas. we should still be able to build
+            # the directory because we still have cache.
+            for f in os.listdir(filesystem_root):
+                unlink_readonly_file(os.path.join(filesystem_root, f))
+            mock_cas_helper.set_data_exception(
+                b"c" * 5, FakeIOError("not found")
+            )
+            mock_cas_helper.set_data_exception(
+                b"d" * 15, FakeIOError("not found")
+            )
+            # simulate restart
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem
+            )
+            builder.init()
+            for i, d in enumerate(input_root_digest_list):
+                builder.build(d, input_root_directory_list[i], local_root)
+                _assert_directory(input_root_data_list[i], local_root)
 
     def test_basic_build_with_cache(self, mock_cas_helper):
         with (
@@ -1214,3 +1268,308 @@ class TestSharedTopLevelCachedDirectoryBuilder(object):
                 f.result()
 
     # def test_same_directory_with_skip_cache_name
+
+
+class TestCacheSizeLimitWithCopy:
+    def test_current_size_bytes(self, mock_cas_helper):
+        with (
+            tempfile.TemporaryDirectory() as filesystem_root,
+            tempfile.TemporaryDirectory() as local_root,
+            tempfile.TemporaryDirectory() as cache_root,
+        ):
+            test_data_list = [
+                {
+                    "file_1": b"a" * 100,
+                    "file_2": b"b" * 20,
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"c" * 5,  # test same file content.
+                        "file_1_3": b"d" * 15,
+                        "dir_1_1": {"file_1_1_1": b"x" * 5},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},  # test same dir.
+                    },
+                },
+                {
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "dir_1_1": {"file_1_1_1": b"x" * 5},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},  # test same dir.
+                    },
+                },
+                {
+                    "file_1": b"a" * 100,
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"c" * 5,  # test same file content.
+                        "file_1_3": b"d" * 15,
+                        "dir_1_1": {},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },
+                {
+                    "dir_2": {
+                        "file_1_1": b"x" * 105,
+                        "file_1_2": b"c" * 51,  # test same file content.
+                        "file_1_3": b"d" * 15,
+                        "dir_1_1": {
+                            "dir_1_1_1": {
+                                "filex": b"x" * 200,
+                            },
+                        },
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },
+            ]
+            input_list = []
+            for data in test_data_list:
+                digest = mock_cas_helper.append_directory(data)
+                dir_ = mock_cas_helper.get_directory_by_digest(digest)
+                input_list.append((digest, dir_))
+            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem.init()
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem, copy_file=True
+            )
+            builder.init()
+            for digest, dir_ in input_list:
+                builder.build(digest, dir_, local_root)
+                total_size_bytes = 0
+                for dir_, dirnames, filenames in os.walk(cache_root):
+                    for n in filenames:
+                        p = os.path.join(dir_, n)
+                        total_size_bytes += os.path.getsize(p)
+                assert total_size_bytes == builder.current_size_bytes
+
+    def test_current_size_bytes_after_error(self, mock_cas_helper):
+        with (
+            tempfile.TemporaryDirectory() as filesystem_root,
+            tempfile.TemporaryDirectory() as local_root,
+            tempfile.TemporaryDirectory() as cache_root,
+        ):
+            error_data = b"x" * 105
+            test_data_list = [
+                {
+                    "file_1": b"a" * 100,
+                    "file_2": b"b" * 20,
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"c" * 5,
+                        "file_1_3": b"d" * 15,
+                        "dir_1_1": {"file_1_1_1": b"x" * 5},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },
+                {
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "dir_1_1": {"file_1_1_1": b"x" * 5},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },
+                {
+                    "file_1": b"a" * 100,
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"c" * 5,
+                        "file_1_3": b"d" * 15,
+                        "dir_1_1": {},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },
+                {
+                    "dir_2": {
+                        "file_1_1": error_data,
+                        "file_1_2": b"c" * 51,
+                        "file_1_3": b"d" * 15,
+                        "dir_1_1": {
+                            "dir_1_1_1": {
+                                "filex": b"x" * 200,
+                            },
+                        },
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },
+            ]
+            input_list = []
+            for data in test_data_list:
+                digest = mock_cas_helper.append_directory(data)
+                dir_ = mock_cas_helper.get_directory_by_digest(digest)
+                input_list.append((digest, dir_))
+            mock_cas_helper.set_data_exception(error_data, FakeIOError())
+            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem.init()
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root, mock_cas_helper, filesystem, copy_file=True
+            )
+            builder.init()
+            for digest, dir_ in input_list:
+                try:
+                    builder.build(digest, dir_, local_root)
+                except FakeIOError:
+                    pass
+                total_size_bytes = 0
+                for dir_, dirnames, filenames in os.walk(cache_root):
+                    for n in filenames:
+                        p = os.path.join(dir_, n)
+                        total_size_bytes += os.path.getsize(p)
+                assert total_size_bytes == builder.current_size_bytes
+
+    def test_current_size_bytes_after_evict(self, mock_cas_helper):
+        with (
+            tempfile.TemporaryDirectory() as filesystem_root,
+            tempfile.TemporaryDirectory() as local_root,
+            tempfile.TemporaryDirectory() as cache_root,
+        ):
+            test_data_list = [
+                {
+                    "file_1": b"a" * 100,
+                    "file_2": b"b" * 20,
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"c" * 5,
+                        "dir_1_1": {"file_1_1_1": b"x" * 5},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"x" * 5,
+                        "dir_1_1": {"file_1_1_1": b"x" * 5},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "file_1": b"a" * 100,
+                    "dir_1": {
+                        "file_1_3": b"d" * 15,
+                        "dir_1_1": {},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "file_1": b"a" * 100,
+                    "dir_1": {
+                        "file_1_3": b"x" * 15,
+                        "dir_1_1": {},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "dir_x": {
+                        "dir_1_1": {"file_1_1_1": b"o" * 15},
+                        "dir_1_2": {"file_1_2_1": b"z" * 5},
+                    },
+                },  # size_bytes: 20
+            ]
+            input_list = []
+            for data in test_data_list:
+                digest = mock_cas_helper.append_directory(data)
+                dir_ = mock_cas_helper.get_directory_by_digest(digest)
+                input_list.append((digest, dir_))
+            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem.init()
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root,
+                mock_cas_helper,
+                filesystem,
+                copy_file=True,
+                max_cache_size_bytes=60,
+            )
+            builder.init()
+            for i in [0, 1, 2, 3, 4, 3, 2, 1, 2, 3, 0, 4, 4, 0, 1, 2]:
+                digest, dir_ = input_list[i]
+                builder.build(digest, dir_, local_root)
+                total_size_bytes = 0
+                for dir_, dirnames, filenames in os.walk(cache_root):
+                    for n in filenames:
+                        p = os.path.join(dir_, n)
+                        total_size_bytes += os.path.getsize(p)
+                assert total_size_bytes == builder.current_size_bytes
+
+    def test_evict_directory(self, mock_cas_helper):
+        with (
+            tempfile.TemporaryDirectory() as filesystem_root,
+            tempfile.TemporaryDirectory() as local_root,
+            tempfile.TemporaryDirectory() as cache_root,
+        ):
+            test_data_list = [
+                {
+                    "file_1": b"a" * 100,
+                    "file_2": b"b" * 20,
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"c" * 5,
+                        "dir_1_1": {"file_1_1_1": b"x" * 5},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "dir_1": {
+                        "file_1_1": b"c" * 5,
+                        "file_1_2": b"x" * 5,
+                        "dir_1_1": {"file_1_1_1": b"x" * 5},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "file_1": b"a" * 100,
+                    "dir_1": {
+                        "file_1_3": b"d" * 15,
+                        "dir_1_1": {},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "file_1": b"a" * 100,
+                    "dir_1": {
+                        "file_1_3": b"x" * 15,
+                        "dir_1_1": {},
+                        "dir_1_2": {"file_1_1_1": b"x" * 5},
+                    },
+                },  # size_bytes: 20
+                {
+                    "dir_x": {
+                        "dir_1_1": {"file_1_1_1": b"o" * 15},
+                        "dir_1_2": {"file_1_2_1": b"z" * 5},
+                    },
+                },  # size_bytes: 20
+            ]
+            input_list = []
+            for data in test_data_list:
+                digest = mock_cas_helper.append_directory(data)
+                dir_ = mock_cas_helper.get_directory_by_digest(digest)
+                input_list.append((digest, dir_))
+            filesystem = LocalHardlinkFilesystem(filesystem_root)
+            filesystem.init()
+            builder = SharedTopLevelCachedDirectoryBuilder(
+                cache_root,
+                mock_cas_helper,
+                filesystem,
+                copy_file=True,
+                max_cache_size_bytes=60,
+            )
+            builder.init()
+            for i in [0, 1, 2]:
+                digest, dir_ = input_list[i]
+                builder.build(digest, dir_, local_root)
+            for i in [0, 3, 4]:
+                digest, dir_ = input_list[i]
+                builder.build(digest, dir_, local_root)
+
+            total_size_bytes = 0
+            for dir_, dirnames, filenames in os.walk(cache_root):
+                for n in filenames:
+                    p = os.path.join(dir_, n)
+                    total_size_bytes += os.path.getsize(p)
+            assert total_size_bytes == builder.current_size_bytes
+            assert builder.current_size_bytes == 60
+            for i in [1, 2]:
+                digest = input_list[i][1].directories[0].digest
+                p = os.path.join(
+                    cache_root, "dir", f"{digest.hash}_{digest.size_bytes}"
+                )
+                assert not os.path.exists(p)
+
+    # TODO: download error remain broken directory.
+    # TODO: test direcotry data cache.

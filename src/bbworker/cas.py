@@ -21,6 +21,20 @@ from build.bazel.remote.execution.v2.remote_execution_pb2_grpc import (
 )
 
 
+class CASError(Exception):
+    pass
+
+
+class BatchReadBlobsError(CASError):
+    def __init__(self, msg: str, digests: typing.List[Digest]):
+        super().__init__(msg)
+        self._digests = digests
+
+    @property
+    def digests(self):
+        return self._digests
+
+
 class IProvider:
     @property
     def size_bytes(self) -> int:
@@ -193,22 +207,31 @@ class CASHelper(object):
                 batch = FetchBatch()
                 batch.append_digest(each_digest)
                 batch_list.append(batch)
+        failed_digests = []
         for i, batch in enumerate(batch_list):
             if batch.digests:
                 request = BatchReadBlobsRequest(digests=batch.digests)
                 response = self._cas_stub.BatchReadBlobs(request)
                 for each in response.responses:
                     if each.status.code != grpc.StatusCode.OK.value[0]:
-                        print(each.status.message)
-                        continue
-                    yield each.digest, each.data
+                        failed_digests.append(each.digest)
+                    else:
+                        yield each.digest, each.data
 
         for each_digest in large_blob.values():
-            bytes_stream = self._read_bytes_from_stream(each_digest)
-            tmp = bytearray()
-            for offset, data in bytes_stream:
-                tmp.extend(data)
-            yield each_digest, bytes(tmp)
+            try:
+                bytes_stream = self._read_bytes_from_stream(each_digest)
+                tmp = bytearray()
+                for offset, data in bytes_stream:
+                    tmp.extend(data)
+                yield each_digest, bytes(tmp)
+            except Exception:
+                failed_digests.append(each_digest)
+        if failed_digests:
+            raise BatchReadBlobsError(
+                "failed to read {0} blobs".format(len(failed_digests)),
+                failed_digests,
+            )
 
     def fetch_all_block(
         self, digests: typing.Iterable[Digest]
@@ -229,20 +252,29 @@ class CASHelper(object):
                 batch = FetchBatch()
                 batch.append_digest(each_digest)
                 batch_list.append(batch)
+        failed_digests = []
         for i, batch in enumerate(batch_list):
             if batch.digests:
                 request = BatchReadBlobsRequest(digests=batch.digests)
                 response = self._cas_stub.BatchReadBlobs(request)
                 for each in response.responses:
                     if each.status.code != grpc.StatusCode.OK.value[0]:
-                        print(each.status.message)
-                        continue
-                    yield each.digest, 0, each.data
+                        failed_digests.append(each.digest)
+                    else:
+                        yield each.digest, 0, each.data
 
         for each_digest in large_blob.values():
-            bytes_stream = self._read_bytes_from_stream(each_digest)
-            for offset, data in bytes_stream:
-                yield each_digest, offset, data
+            try:
+                bytes_stream = self._read_bytes_from_stream(each_digest)
+                for offset, data in bytes_stream:
+                    yield each_digest, offset, data
+            except Exception:
+                failed_digests.append(each_digest)
+        if failed_digests:
+            raise BatchReadBlobsError(
+                "failed to read {0} blobs".format(len(failed_digests)),
+                failed_digests,
+            )
 
     def _read_bytes_from_stream(self, digest: Digest):
         resource_name = "blobs/{hash_}/{size}".format(
@@ -293,7 +325,7 @@ class CASHelper(object):
             response = self._cas_stub.BatchUpdateBlobs(update_request)
             for each in response.responses:
                 if each.status.code != grpc.StatusCode.OK.value[0]:
-                    # TODO:
+                    # TODO: log or exception?
                     print(each.status.message)
 
     def _write_bytes_to_steam(self, provider: IProvider):
