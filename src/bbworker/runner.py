@@ -151,96 +151,105 @@ def execute_command(
                 }
             )
         )
-        result = subprocess.run(
-            command.arguments,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=working_directory,
-        )
-
-        update_provider_list: typing.List[IProvider] = []
-
-        stdout_digest = None
-        stderr_digest = None
-        if result.stdout:
-            stdout_provider = BytesProvider(result.stdout)
-            stdout_digest = Digest(
-                hash=stdout_provider.hash_,
-                size_bytes=stdout_provider.size_bytes,
+        try:
+            result = subprocess.run(
+                command.arguments,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=working_directory,
             )
-            update_provider_list.append(stdout_provider)
-
-        if result.stderr:
-            stderr_provider = BytesProvider(result.stderr)
-            stderr_digest = Digest(
-                hash=stderr_provider.hash_,
-                size_bytes=stderr_provider.size_bytes,
+        except FileNotFoundError as e:
+            status = Status(
+                code=grpc.StatusCode.INVALID_ARGUMENT.value[0], message=str(e)
             )
-            update_provider_list.append(stderr_provider)
-        if result.returncode == 0:
-            # Check outputs.
-            if command.output_paths:
-                output_paths: typing.Iterable[str] = command.output_paths
-            else:
-                output_paths = list(command.output_files)
-                output_paths.extend(command.output_directories)
-            # First check all file exists.
-            for each in output_paths:
-                local_path = os.path.join(build_directory, each)
-                if not os.path.exists(local_path):
-                    # TODO:
-                    raise Exception(f"{each} not generated.")
-                elif os.path.isdir(local_path):
-                    raise NotImplementedError(
-                        "Output directory is not implemented yet."
-                    )
-            # Then generate ActionResult.
-            output_files = []
-
-            for each in output_paths:
-                local_path = os.path.join(build_directory, each)
-                if os.path.isfile(local_path):
-                    provider = FileProvider(local_path)
-                    update_provider_list.append(provider)
-                    # TODO: is_executable
-                    output_files.append(
-                        OutputFile(
-                            path=each,
-                            digest={
-                                "hash": provider.hash_,
-                                "size_bytes": provider.size_bytes,
-                            },
-                        )
-                    )
-                # TODO: Directory.
+            response = ExecuteResponse(status=status)
+        except Exception as e:
+            status = Status(
+                code=grpc.StatusCode.INTERNAL.value[0], message=str(e)
+            )
+            response = ExecuteResponse(status=status)
         else:
-            output_files = []
+            update_provider_list: typing.List[IProvider] = []
 
-        cas_helper.update_all(update_provider_list)
+            stdout_digest = None
+            stderr_digest = None
+            if result.stdout:
+                stdout_provider = BytesProvider(result.stdout)
+                stdout_digest = Digest(
+                    hash=stdout_provider.hash_,
+                    size_bytes=stdout_provider.size_bytes,
+                )
+                update_provider_list.append(stdout_provider)
 
-        state_queue.put(
-            CurrentState(
-                executing={
-                    "action_digest": action_digest,
-                    "uploading_outputs": {},
-                }
+            if result.stderr:
+                stderr_provider = BytesProvider(result.stderr)
+                stderr_digest = Digest(
+                    hash=stderr_provider.hash_,
+                    size_bytes=stderr_provider.size_bytes,
+                )
+                update_provider_list.append(stderr_provider)
+            if result.returncode == 0:
+                # Check outputs.
+                if command.output_paths:
+                    output_paths: typing.Iterable[str] = command.output_paths
+                else:
+                    output_paths = list(command.output_files)
+                    output_paths.extend(command.output_directories)
+                # First check all file exists.
+                for each in output_paths:
+                    local_path = os.path.join(build_directory, each)
+                    if not os.path.exists(local_path):
+                        # TODO:
+                        raise Exception(f"{each} not generated.")
+                    elif os.path.isdir(local_path):
+                        raise NotImplementedError(
+                            "Output directory is not implemented yet."
+                        )
+                # Then generate ActionResult.
+                output_files = []
+
+                for each in output_paths:
+                    local_path = os.path.join(build_directory, each)
+                    if os.path.isfile(local_path):
+                        provider = FileProvider(local_path)
+                        update_provider_list.append(provider)
+                        # TODO: is_executable
+                        output_files.append(
+                            OutputFile(
+                                path=each,
+                                digest={
+                                    "hash": provider.hash_,
+                                    "size_bytes": provider.size_bytes,
+                                },
+                            )
+                        )
+                    # TODO: Directory.
+            else:
+                output_files = []
+            state_queue.put(
+                CurrentState(
+                    executing={
+                        "action_digest": action_digest,
+                        "uploading_outputs": {},
+                    }
+                )
             )
-        )
-        # Upload action result.
-        action_result = ActionResult(
-            output_files=output_files,
-            exit_code=result.returncode,
-            stdout_digest=stdout_digest,
-            stdout_raw=result.stdout,
-            stderr_digest=stderr_digest,
-            stderr_raw=result.stderr,
-        )
-        response = ExecuteResponse(
-            result=action_result,
-            cached_result=False,
-            status={"code": grpc.StatusCode.OK.value[0]},
-        )
+            cas_helper.update_all(update_provider_list)
+            # Upload action result.
+            action_result = ActionResult(
+                output_files=output_files,
+                exit_code=result.returncode,
+                stdout_digest=stdout_digest,
+                stdout_raw=result.stdout,
+                stderr_digest=stderr_digest,
+                stderr_raw=result.stderr,
+            )
+            response = ExecuteResponse(
+                result=action_result,
+                cached_result=False,
+                status={"code": grpc.StatusCode.OK.value[0]},
+            )
     return response
 
 
