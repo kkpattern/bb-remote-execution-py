@@ -26,11 +26,11 @@ def parse_args():
     parser.add_argument("--s3-secret", required=True)
     parser.add_argument("--s3-bucket", required=True)
     parser.add_argument("path")
+    parser.add_argument("key")
     return parser.parse_args()
 
 
 def main():
-    version = importlib.metadata.version("bbworker")
     args = parse_args()
     s3_client = boto3.client(
         "s3",
@@ -43,12 +43,8 @@ def main():
             s3={"addressing_style": "virtual"}, signature_version="s3"
         ),
     )
-    object_name = f"bbworker_service-{version}"
-    if upload_file(s3_client, args.path, args.s3_bucket, object_name):
-        print(f"http://{args.s3_bucket}.{HOST}/{object_name}")
-    object_name = "bbworker_service-latest"
-    if upload_file(s3_client, args.path, args.s3_bucket, object_name):
-        print(f"http://{args.s3_bucket}.{HOST}/{object_name}")
+    if upload_file(s3_client, args.path, args.s3_bucket, args.key):
+        print(f"http://{args.s3_bucket}.{HOST}/{args.key}")
 
 
 if __name__ == "__main__":

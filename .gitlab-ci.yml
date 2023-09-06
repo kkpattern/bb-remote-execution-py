@@ -60,7 +60,8 @@ upload-winservice:
   script:
     - cd winservice
     - call build.bat
-    - python upload.py "dist/bbworker_service.exe" "--s3-key" %S3_ACCESS_KEY% "--s3-secret" %S3_ACCESS_SECRET% "--s3-bucket" "gzdev2-echoes-assets"
+    - python upload.py "dist/bbworker_service.exe" "bbworker_service-latest" "--s3-key" %S3_ACCESS_KEY% "--s3-secret" %S3_ACCESS_SECRET% "--s3-bucket" "gzdev2-echoes-assets"
+    - python upload.py "install.py" "bbworker_service_install.py" "--s3-key" %S3_ACCESS_KEY% "--s3-secret" %S3_ACCESS_SECRET% "--s3-bucket" "gzdev2-echoes-assets"
   only:
     - tags
   when: manual
