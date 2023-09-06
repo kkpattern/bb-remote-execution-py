@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import typing
+import locale
 
 import grpc
 from google.protobuf.any_pb2 import Any
@@ -40,6 +41,17 @@ from .cas import BatchReadBlobsError
 from .directorybuilder import IDirectoryBuilder
 from .metrics import MeterBase
 from .util import setup_xcode_env
+
+
+SHOW_INCLUDE_PREFIX_EN = b'Note: including file:'
+SHOW_INCLUDE_PREFIX_CN = b'\xe6\xb3\xa8\xe6\x84\x8f: \xe5\x8c\x85\xe5\x90\xab\xe6\x96\x87\xe4\xbb\xb6:'
+
+
+def reencoding_output(output: bytes) -> bytes:
+    try:
+        return output.decode(locale.getpreferredencoding()).encode("utf-8")
+    except Exception:
+        return output
 
 
 def get_action_detail(
@@ -172,18 +184,41 @@ def execute_command(
         else:
             update_provider_list: typing.List[IProvider] = []
 
+            if result.stdout:
+                stdout = reencoding_output(result.stdout)
+            else:
+                stdout = b""
+            if result.stderr:
+                stdout = reencoding_output(result.stderr)
+            else:
+                stderr = b""
+
             stdout_digest = None
             stderr_digest = None
-            if result.stdout:
-                stdout_provider = BytesProvider(result.stdout)
+            if stdout:
+                if "/showIncludes" in command.arguments:
+                    path_converted = []
+                    encoded_working_dir = os.path.abspath(working_directory).replace("\\", "/").encode("utf-8")
+                    for line in stdout.splitlines():
+                        for prefix in [SHOW_INCLUDE_PREFIX_EN,
+                                       SHOW_INCLUDE_PREFIX_CN]:
+                            if line.startswith(prefix):
+                                include_path = line[len(prefix):].replace(b"\\", b"/").strip()
+                                if include_path.startswith(encoded_working_dir):
+                                    relative_path = os.path.relpath(include_path, encoded_working_dir)
+                                    line = SHOW_INCLUDE_PREFIX_CN + b" " + relative_path
+                                    break
+                        path_converted.append(line)
+                    stdout = b"\n".join(path_converted)
+                stdout_provider = BytesProvider(stdout)
                 stdout_digest = Digest(
                     hash=stdout_provider.hash_,
                     size_bytes=stdout_provider.size_bytes,
                 )
                 update_provider_list.append(stdout_provider)
 
-            if result.stderr:
-                stderr_provider = BytesProvider(result.stderr)
+            if stderr:
+                stderr_provider = BytesProvider(stderr)
                 stderr_digest = Digest(
                     hash=stderr_provider.hash_,
                     size_bytes=stderr_provider.size_bytes,
@@ -241,9 +276,9 @@ def execute_command(
                 output_files=output_files,
                 exit_code=result.returncode,
                 stdout_digest=stdout_digest,
-                stdout_raw=result.stdout,
+                stdout_raw=stdout,
                 stderr_digest=stderr_digest,
-                stderr_raw=result.stderr,
+                stderr_raw=stderr,
             )
             response = ExecuteResponse(
                 result=action_result,
