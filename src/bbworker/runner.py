@@ -43,11 +43,35 @@ from .metrics import MeterBase
 from .util import setup_xcode_env
 
 
-SHOW_INCLUDE_PREFIX_EN = b'Note: including file:'
-SHOW_INCLUDE_PREFIX_CN = b'\xe6\xb3\xa8\xe6\x84\x8f: \xe5\x8c\x85\xe5\x90\xab\xe6\x96\x87\xe4\xbb\xb6:'
+SHOW_INCLUDE_PREFIX_EN = b"Note: including file:"
+SHOW_INCLUDE_PREFIX_CN = b"\xe6\xb3\xa8\xe6\x84\x8f: \xe5\x8c\x85\xe5\x90\xab\xe6\x96\x87\xe4\xbb\xb6:"
+
+
+def fix_showincludes(origin_stdout: bytes, working_directory: str) -> bytes:
+    """Fix aboslute paths in MSVC /showIncludes output."""
+    path_converted = []
+    encoded_working_dir = (
+        os.path.abspath(working_directory).replace("\\", "/").encode("utf-8")
+    )
+    for line in origin_stdout.splitlines():
+        for prefix in [
+            SHOW_INCLUDE_PREFIX_EN,
+            SHOW_INCLUDE_PREFIX_CN,
+        ]:
+            if line.startswith(prefix):
+                include_path = line[len(prefix) :].replace(b"\\", b"/").strip()
+                if include_path.startswith(encoded_working_dir):
+                    relative_path = os.path.relpath(
+                        include_path, encoded_working_dir
+                    )
+                    line = SHOW_INCLUDE_PREFIX_CN + b" " + relative_path
+                    break
+        path_converted.append(line)
+    return b"\n".join(path_converted)
 
 
 def reencoding_output(output: bytes) -> bytes:
+    """Try reencode output to utf-8. If failed return the origin output."""
     try:
         return output.decode(locale.getpreferredencoding()).encode("utf-8")
     except Exception:
@@ -185,11 +209,17 @@ def execute_command(
             update_provider_list: typing.List[IProvider] = []
 
             if result.stdout:
-                stdout = reencoding_output(result.stdout)
+                if sys.platform == "win32":
+                    stdout = reencoding_output(result.stdout)
+                else:
+                    stdout = result.stdout
             else:
                 stdout = b""
             if result.stderr:
-                stdout = reencoding_output(result.stderr)
+                if sys.platform == "win32":
+                    stderr = reencoding_output(result.stderr)
+                else:
+                    stderr = result.stderr
             else:
                 stderr = b""
 
@@ -197,19 +227,7 @@ def execute_command(
             stderr_digest = None
             if stdout:
                 if "/showIncludes" in command.arguments:
-                    path_converted = []
-                    encoded_working_dir = os.path.abspath(working_directory).replace("\\", "/").encode("utf-8")
-                    for line in stdout.splitlines():
-                        for prefix in [SHOW_INCLUDE_PREFIX_EN,
-                                       SHOW_INCLUDE_PREFIX_CN]:
-                            if line.startswith(prefix):
-                                include_path = line[len(prefix):].replace(b"\\", b"/").strip()
-                                if include_path.startswith(encoded_working_dir):
-                                    relative_path = os.path.relpath(include_path, encoded_working_dir)
-                                    line = SHOW_INCLUDE_PREFIX_CN + b" " + relative_path
-                                    break
-                        path_converted.append(line)
-                    stdout = b"\n".join(path_converted)
+                    stdout = fix_showincludes(stdout, working_directory)
                 stdout_provider = BytesProvider(stdout)
                 stdout_digest = Digest(
                     hash=stdout_provider.hash_,
