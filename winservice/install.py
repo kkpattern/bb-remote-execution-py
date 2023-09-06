@@ -12,7 +12,7 @@ buildbarn:
   scheduler_address: "{scheduler_address}"
 platform:
   properties:
-    - name: "os"
+    - name: "host_os"
       value: "windows"
 worker_id:
   node: "{node_name}"

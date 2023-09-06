@@ -2,10 +2,13 @@ import logging
 import os
 import os.path
 import queue
+import re
 import subprocess
 import sys
 import threading
 import typing
+import locale
+import pathlib
 
 import grpc
 from google.protobuf.any_pb2 import Any
@@ -40,6 +43,61 @@ from .cas import BatchReadBlobsError
 from .directorybuilder import IDirectoryBuilder
 from .metrics import MeterBase
 from .util import setup_xcode_env
+
+
+SHOW_INCLUDE_PREFIX_EN = "Note: including file:"
+SHOW_INCLUDE_PREFIX_ZH = "注意: 包含文件:"
+
+
+SHOW_INCLUDE_PATTERN = re.compile(
+    r"(?P<prefix>{en}|{zh})(?P<path>.+)".format(
+        en=SHOW_INCLUDE_PREFIX_EN, zh=SHOW_INCLUDE_PREFIX_ZH
+    )
+)
+
+
+def fix_showincludes(origin_stdout: bytes, working_directory: str) -> bytes:
+    """Fix aboslute paths in MSVC /showIncludes output.
+
+    The output should be utf8 encoded. If not the origin_stdout will be
+    returned.
+    """
+    try:
+        stdout_str = origin_stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return origin_stdout
+    else:
+        path_converted = []
+        working_dir_path = pathlib.PureWindowsPath(working_directory)
+        for line in stdout_str.splitlines():
+            line = line.strip()
+            match = re.match(SHOW_INCLUDE_PATTERN, line)
+            if match:
+                include_path = pathlib.PureWindowsPath(
+                    match.group("path").strip()
+                )
+                if include_path.is_relative_to(working_dir_path):
+                    relative_path = str(
+                        include_path.relative_to(working_dir_path)
+                    )
+                    line = "{0} {1}".format(
+                        match.group("prefix"), relative_path
+                    )
+            path_converted.append(line)
+        return "\n".join(path_converted).encode("utf-8")
+
+
+def reencoding_output(output: bytes) -> bytes:
+    """Try reencode output to utf-8. If failed return the origin output."""
+    try:
+        output.decode("utf-8")
+    except Exception:
+        try:
+            return output.decode(locale.getpreferredencoding()).encode("utf-8")
+        except Exception:
+            return output
+    else:
+        return output
 
 
 def get_action_detail(
@@ -172,18 +230,37 @@ def execute_command(
         else:
             update_provider_list: typing.List[IProvider] = []
 
+            if result.stdout:
+                if sys.platform == "win32":
+                    stdout = reencoding_output(result.stdout)
+                else:
+                    stdout = result.stdout
+            else:
+                stdout = b""
+            if result.stderr:
+                if sys.platform == "win32":
+                    stderr = reencoding_output(result.stderr)
+                else:
+                    stderr = result.stderr
+            else:
+                stderr = b""
+
             stdout_digest = None
             stderr_digest = None
-            if result.stdout:
-                stdout_provider = BytesProvider(result.stdout)
+            if stdout:
+                if "/showIncludes" in command.arguments:
+                    stdout = fix_showincludes(
+                        stdout, os.path.abspath(working_directory)
+                    )
+                stdout_provider = BytesProvider(stdout)
                 stdout_digest = Digest(
                     hash=stdout_provider.hash_,
                     size_bytes=stdout_provider.size_bytes,
                 )
                 update_provider_list.append(stdout_provider)
 
-            if result.stderr:
-                stderr_provider = BytesProvider(result.stderr)
+            if stderr:
+                stderr_provider = BytesProvider(stderr)
                 stderr_digest = Digest(
                     hash=stderr_provider.hash_,
                     size_bytes=stderr_provider.size_bytes,
@@ -241,9 +318,9 @@ def execute_command(
                 output_files=output_files,
                 exit_code=result.returncode,
                 stdout_digest=stdout_digest,
-                stdout_raw=result.stdout,
+                stdout_raw=stdout,
                 stderr_digest=stderr_digest,
-                stderr_raw=result.stderr,
+                stderr_raw=stderr,
             )
             response = ExecuteResponse(
                 result=action_result,
