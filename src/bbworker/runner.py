@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 import os.path
@@ -23,6 +24,9 @@ from build.bazel.remote.execution.v2.remote_execution_pb2 import Command
 from build.bazel.remote.execution.v2.remote_execution_pb2 import Directory
 from build.bazel.remote.execution.v2.remote_execution_pb2 import (
     ExecuteResponse,
+)
+from build.bazel.remote.execution.v2.remote_execution_pb2 import (
+    ExecutedActionMetadata,
 )
 from build.bazel.remote.execution.v2.remote_execution_pb2 import OutputFile
 from build.bazel.remote.execution.v2.remote_execution_pb2 import (
@@ -67,6 +71,10 @@ def fix_showincludes(origin_stdout: bytes, working_directory: str) -> bytes:
     except UnicodeDecodeError:
         return origin_stdout
     else:
+        if "\r\n" in stdout_str:
+            line_ending = "\r\n"
+        else:
+            line_ending = "\n"
         path_converted = []
         working_dir_path = pathlib.PureWindowsPath(working_directory)
         for line in stdout_str.splitlines():
@@ -84,7 +92,10 @@ def fix_showincludes(origin_stdout: bytes, working_directory: str) -> bytes:
                         match.group("prefix"), relative_path
                     )
             path_converted.append(line)
-        return "\n".join(path_converted).encode("utf-8")
+        result = line_ending.join(path_converted)
+        if not result.endswith(line_ending):
+            result += line_ending
+        return result.encode("utf-8")
 
 
 def reencoding_output(output: bytes) -> bytes:
@@ -145,6 +156,7 @@ def prepare_output_dirs(command: Command, root: str) -> None:
 
 
 def execute_command(
+    worker_id: str,
     meter: MeterBase,
     state_queue: queue.Queue,
     build_directory_builder: IDirectoryBuilder,
@@ -219,12 +231,14 @@ def execute_command(
             )
         except FileNotFoundError as e:
             status = Status(
-                code=grpc.StatusCode.INVALID_ARGUMENT.value[0], message=str(e)
+                code=grpc.StatusCode.INVALID_ARGUMENT.value[0],
+                message=str(e) + f"\nRemote worker: {worker_id}",
             )
             response = ExecuteResponse(status=status)
         except Exception as e:
             status = Status(
-                code=grpc.StatusCode.INTERNAL.value[0], message=str(e)
+                code=grpc.StatusCode.INTERNAL.value[0],
+                message=str(e) + f"\nRemote worker: {worker_id}",
             )
             response = ExecuteResponse(status=status)
         else:
@@ -314,18 +328,24 @@ def execute_command(
             )
             cas_helper.update_all(update_provider_list)
             # Upload action result.
+            exit_code = result.returncode
             action_result = ActionResult(
                 output_files=output_files,
-                exit_code=result.returncode,
+                exit_code=exit_code,
                 stdout_digest=stdout_digest,
                 stdout_raw=stdout,
                 stderr_digest=stderr_digest,
                 stderr_raw=stderr,
             )
+            if exit_code != 0:
+                message = f"Remote Worker: {worker_id}"
+            else:
+                message = None
             response = ExecuteResponse(
                 result=action_result,
                 cached_result=False,
                 status={"code": grpc.StatusCode.OK.value[0]},
+                message=message,
             )
     return response
 
@@ -333,6 +353,7 @@ def execute_command(
 class RunnerThread(threading.Thread):
     def __init__(
         self,
+        worker_id: typing.Dict[str, str],
         cas_stub: ContentAddressableStorageStub,
         cas_helper: CASHelper,
         action_cache_stub,
@@ -343,6 +364,7 @@ class RunnerThread(threading.Thread):
         meter: MeterBase,
     ):
         super().__init__()
+        self._worker_id = copy.copy(worker_id)
         self._cas_stub = cas_stub
         self._cas_helper = cas_helper
         self._action_cache_stub = action_cache_stub
@@ -391,6 +413,7 @@ class RunnerThread(threading.Thread):
                 )
                 if command and input_root:
                     response = execute_command(
+                        str(self._worker_id),
                         self._meter,
                         self._current_state_queue,
                         self._build_directory_builder,

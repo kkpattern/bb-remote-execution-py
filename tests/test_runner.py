@@ -19,7 +19,7 @@ class TestFixShowIncludes:
             b"Note: including file: engine\\world2.h\n"
             b"Note: including file:    C:\\Windows\\system.h\n"
             b"Note: including file: engine\\common\\common.h\n"
-            b"Note: including file:    C:\\Windows\\system2.h"
+            b"Note: including file:    C:\\Windows\\system2.h\n"
         )
 
     def test_fix_showincludes_zh(self):
@@ -32,7 +32,7 @@ class TestFixShowIncludes:
         assert fixed_output == (
             b"\xe6\xb3\xa8\xe6\x84\x8f: \xe5\x8c\x85\xe5\x90\xab\xe6\x96\x87\xe4\xbb\xb6: engine\\world.h\n"
             b"\xe6\xb3\xa8\xe6\x84\x8f: \xe5\x8c\x85\xe5\x90\xab\xe6\x96\x87\xe4\xbb\xb6: engine\\common\\common.h\n"
-            b"\xe6\xb3\xa8\xe6\x84\x8f: \xe5\x8c\x85\xe5\x90\xab\xe6\x96\x87\xe4\xbb\xb6:    C:\\Windows\\system.h"
+            b"\xe6\xb3\xa8\xe6\x84\x8f: \xe5\x8c\x85\xe5\x90\xab\xe6\x96\x87\xe4\xbb\xb6:    C:\\Windows\\system.h\n"
         )
 
     def test_fix_showincludes_normalize_path(self):
@@ -45,17 +45,30 @@ class TestFixShowIncludes:
         assert fixed_output == (
             b"Note: including file: engine\\world.h\n"
             b"Note: including file: engine\\common\\common.h\n"
-            b"Note: including file:    C:\\Windows\\system.h"
+            b"Note: including file:    C:\\Windows\\system.h\n"
         )
 
     def test_fix_showincludes_non_utf8(self):
         output = (
             "注意: 包含文件:    G:\\temp\\engine\\world.h\n"
             "注意: 包含文件:    G:\\temp/engine/common\\common.h\n"
-            "注意: 包含文件:    C:\\Windows\\system.h"
+            "注意: 包含文件:    C:\\Windows\\system.h\n"
         ).encode("cp936")
         fixed_output = fix_showincludes(output, "G:/temp")
         assert fixed_output == output
+
+    def test_lrln_lineending(self):
+        output = (
+            "注意: 包含文件:    G:\\temp\\engine\\world.h\r\n"
+            "注意: 包含文件:    G:\\temp/engine/common\\common.h\r\n"
+            "注意: 包含文件:    C:\\Windows\\system.h\r\n"
+        ).encode("utf-8")
+        fixed_output = fix_showincludes(output, "G:/temp")
+        assert fixed_output == (
+            "注意: 包含文件: engine\\world.h\r\n"
+            "注意: 包含文件: engine\\common\\common.h\r\n"
+            "注意: 包含文件:    C:\\Windows\\system.h\r\n"
+        ).encode("utf-8")
 
 
 class TestReencodingOutput:

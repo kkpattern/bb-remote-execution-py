@@ -55,6 +55,7 @@ class WorkerThreadMain(threading.Thread):
         cas_byte_stream_stub = ByteStreamStub(self._cas_channel)
         cas_helper = CASHelper(cas_stub, cas_byte_stream_stub)
         self._runner_thread = RunnerThread(
+            self._worker_id,
             cas_stub,
             cas_helper,
             action_cache_stub,
