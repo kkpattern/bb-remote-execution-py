@@ -38,7 +38,7 @@ upload:
     - python3 -m venv .build
     - . ./.build/bin/activate
     - pip install build
-    - pip install twine==1.15.0
+    - pip install twine<2.0.0
   script:
     - python -m build
     - twine upload --repository-url $PYPISERVER_URL -u $PYPISERVER_USERNAME -p $PYPISERVER_PASSWORD dist/*
